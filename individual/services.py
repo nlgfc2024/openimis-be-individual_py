@@ -44,6 +44,66 @@ from workflow.systems.base import WorkflowHandler
 
 logger = logging.getLogger(__name__)
 
+# Default beneficiary status used for the legacy (bare-list) advanced_criteria format.
+DEFAULT_BENEFICIARY_STATUS = 'POTENTIAL'
+
+
+def merge_mandatory_enrolment_criteria(custom_filters, benefit_plan_id, status):
+    """Force the Phase's status-level default eligibility filters into the applied
+    ``custom_filters`` so they cannot be dropped by the client (mandatory at enrolment).
+
+    The defaults live on ``BenefitPlan.json_ext['advanced_criteria']`` as a
+    ``{status: [{custom_filter_condition, ...}]}`` map (legacy format is a bare list =
+    ``POTENTIAL`` status). We append their ``custom_filter_condition`` strings — in the
+    same ``field__type=value`` format the custom filters already use — de-duplicated, so
+    they are always AND-ed in regardless of what the FE sent (or omitted).
+    """
+    custom_filters = list(custom_filters or [])
+    if not benefit_plan_id or 'social_protection' not in apps.app_configs:
+        return custom_filters
+
+    from social_protection.models import BenefitPlan
+    benefit_plan = BenefitPlan.objects.filter(id=benefit_plan_id).first()
+    if not benefit_plan:
+        return custom_filters
+
+    json_ext = benefit_plan.json_ext or {}
+    if isinstance(json_ext, str):
+        try:
+            json_ext = json.loads(json_ext)
+        except (TypeError, ValueError):
+            json_ext = {}
+
+    criteria = json_ext.get('advanced_criteria', {}) or {}
+    if isinstance(criteria, list):  # legacy: bare list belonged to the default status
+        criteria = {DEFAULT_BENEFICIARY_STATUS: criteria}
+
+    seen = set(custom_filters)
+    for entry in criteria.get(status, []) or []:
+        condition = _criterion_to_condition(entry)
+        if condition and condition not in seen:
+            custom_filters.append(condition)
+            seen.add(condition)
+    return custom_filters
+
+
+def _criterion_to_condition(entry):
+    """Build the ``field__filter__type=value`` custom-filter string for a stored
+    advanced-criteria entry. Handles both stored shapes: the eligibility-panel shape
+    ``{field, filter, type, value}`` and the already-built ``{custom_filter_condition}``
+    (and a plain string). Format matches the FE (`AdvancedCriteriaForm`) and what
+    ``CustomFilterWizard.apply_filter_to_queryset`` parses."""
+    if isinstance(entry, str):
+        return entry
+    if not isinstance(entry, dict):
+        return None
+    if entry.get('custom_filter_condition'):
+        return entry['custom_filter_condition']
+    field, flt, typ = entry.get('field'), entry.get('filter'), entry.get('type')
+    if field is None or flt is None or typ is None:
+        return None
+    return f"{field}__{flt}__{typ}={entry.get('value')}"
+
 
 class IndividualService(BaseService, UpdateCheckerLogicServiceMixin, DeleteCheckerLogicServiceMixin):
     @register_service_signal('individual_service.create')
@@ -82,6 +142,8 @@ class IndividualService(BaseService, UpdateCheckerLogicServiceMixin, DeleteCheck
 
     @register_service_signal('individual_service.select_individuals_to_benefit_plan')
     def select_individuals_to_benefit_plan(self, custom_filters, benefit_plan_id, status, user):
+        # Mandatory: the Phase's status-level default filters are always applied.
+        custom_filters = merge_mandatory_enrolment_criteria(custom_filters, benefit_plan_id, status)
         individual_query = Individual.objects.filter(is_deleted=False)
         subquery = GroupIndividual.objects.filter(
             individual=OuterRef('pk')
@@ -264,8 +326,10 @@ class GroupService(
 
     @register_service_signal('group_service.select_groups_to_benefit_plan')
     def select_groups_to_benefit_plan(self, custom_filters, benefit_plan_id, status, user):
+        # Mandatory: the Phase's status-level default filters are always applied.
+        custom_filters = merge_mandatory_enrolment_criteria(custom_filters, benefit_plan_id, status)
         group_query = Group.objects.filter(is_deleted=False)
-        # criteria will be based on head of the group
+        # Filters run against Group.json_ext (household + denormalised head fields).
         group_query_with_filters = CustomFilterWizardStorage.build_custom_filters_queryset(
             "individual",
             "Group",
