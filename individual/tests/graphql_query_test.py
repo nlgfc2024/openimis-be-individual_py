@@ -889,7 +889,10 @@ class IndividualGQLQueryTest(IndividualGQLTestCase):
 
         # Verify the individual is NOT counted in the enrollment summary while the group exists
         query_str = '''query {
-          individualEnrollmentSummary (benefitPlanId: "''' + str(benefit_plan.id) + '''") {
+          individualEnrollmentSummary (
+            benefitPlanId: "''' + str(benefit_plan.id) + '''",
+            status: "ACTIVE"
+          ) {
             numberOfSelectedIndividuals
             totalNumberOfIndividuals
             numberOfIndividualsAssignedToProgramme
