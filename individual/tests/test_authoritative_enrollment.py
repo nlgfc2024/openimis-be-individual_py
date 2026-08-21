@@ -1,3 +1,4 @@
+import copy
 from unittest.mock import Mock, patch
 
 from django.core.exceptions import ValidationError
@@ -12,6 +13,7 @@ from individual.services import (
 )
 from individual.tests.test_helpers import create_group, create_individual
 from social_protection.tests.test_helpers import create_benefit_plan
+from social_protection.apps import SocialProtectionConfig
 
 
 class EnrollmentCriterionNormalizationTest(SimpleTestCase):
@@ -70,6 +72,20 @@ class AuthoritativeEnrollmentTest(TestCase):
     @classmethod
     def setUpTestData(cls):
         cls.user = LogInHelper().get_or_create_user_api()
+
+    def setUp(self):
+        self.original_mandatory_criteria = copy.deepcopy(
+            SocialProtectionConfig.mandatory_enrollment_criteria
+        )
+        SocialProtectionConfig.mandatory_enrollment_criteria = {
+            "INDIVIDUAL": {},
+            "GROUP": {},
+        }
+
+    def tearDown(self):
+        SocialProtectionConfig.mandatory_enrollment_criteria = (
+            self.original_mandatory_criteria
+        )
 
     def _benefit_plan(self, benefit_plan_type):
         return create_benefit_plan(self.user.username, payload_override={
@@ -173,6 +189,49 @@ class AuthoritativeEnrollmentTest(TestCase):
 
         selected_ids = set(result.values_list("id", flat=True))
         self.assertEqual(selected_ids, {eligible.id})
+
+    def test_group_immutable_rule_cannot_be_removed_from_phase_or_payload(self):
+        SocialProtectionConfig.mandatory_enrollment_criteria = {
+            "INDIVIDUAL": {},
+            "GROUP": {
+                "POTENTIAL": [{
+                    "field": "validation_status",
+                    "filter": "exact",
+                    "type": "string",
+                    "value": "VERIFIED",
+                }]
+            },
+        }
+        benefit_plan = create_benefit_plan(self.user.username, payload_override={
+            "type": "GROUP",
+            "beneficiary_data_schema": {
+                "properties": {"validation_status": {"type": "string"}}
+            },
+            "json_ext": {"advanced_criteria": {"POTENTIAL": []}},
+        })
+        eligible = create_group(self.user.username, {
+            "json_ext": {"validation_status": "VERIFIED"}
+        })
+        create_group(self.user.username, {
+            "json_ext": {"validation_status": "NOT_VERIFIED"}
+        })
+
+        result = build_group_enrollment_queryset(
+            custom_filters=[],
+            benefit_plan_id=str(benefit_plan.id),
+            status="POTENTIAL",
+        )
+
+        self.assertEqual(set(result.values_list("id", flat=True)), {eligible.id})
+
+        attempted_replacement = build_group_enrollment_queryset(
+            custom_filters=[
+                'validation_status__exact__string="NOT_VERIFIED"'
+            ],
+            benefit_plan_id=str(benefit_plan.id),
+            status="POTENTIAL",
+        )
+        self.assertFalse(attempted_replacement.exists())
 
     def test_rejects_benefit_plan_type_mismatch(self):
         group_plan = self._benefit_plan("GROUP")

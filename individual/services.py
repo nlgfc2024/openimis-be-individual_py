@@ -90,22 +90,25 @@ def merge_mandatory_enrolment_criteria(
     status,
     expected_type=None,
 ):
-    """Force the Phase's status-level default eligibility filters into the applied
-    ``custom_filters`` so they cannot be dropped by the client (mandatory at enrolment).
+    """Combine immutable system, saved Phase, and operator enrollment filters.
 
-    The defaults live on ``BenefitPlan.json_ext['advanced_criteria']`` as a
-    ``{status: [{custom_filter_condition, ...}]}`` map (legacy format is a bare list =
-    ``POTENTIAL`` status). We append their ``custom_filter_condition`` strings — in the
-    same ``field__type=value`` format the custom filters already use — de-duplicated, so
-    they are always AND-ed in regardless of what the FE sent (or omitted).
+    Immutable rules live in Social Protection module configuration. Editable Phase
+    rules live on ``BenefitPlan.json_ext['advanced_criteria']`` (legacy bare lists map
+    to ``POTENTIAL``). Both are normalized and prepended to validated operator filters,
+    so every category is de-duplicated and AND-ed regardless of browser input.
     """
-    custom_filters = list(custom_filters or [])
+    operator_filters = list(custom_filters or [])
     benefit_plan = _load_enrollment_benefit_plan(
         benefit_plan_id,
         status,
         expected_type,
     )
-    _validate_operator_filters(custom_filters, benefit_plan)
+    _validate_operator_filters(operator_filters, benefit_plan)
+
+    from social_protection.apps import SocialProtectionConfig
+
+    configured = SocialProtectionConfig.mandatory_enrollment_criteria or {}
+    system_criteria = configured.get(expected_type or benefit_plan.type, {}) or {}
 
     json_ext = benefit_plan.json_ext or {}
     if isinstance(json_ext, str):
@@ -118,13 +121,23 @@ def merge_mandatory_enrolment_criteria(
     if isinstance(criteria, list):  # legacy: bare list belonged to the default status
         criteria = {DEFAULT_BENEFICIARY_STATUS: criteria}
 
-    seen = set(custom_filters)
-    for entry in criteria.get(status, []) or []:
+    combined_filters = []
+    seen = set()
+    for entry in (
+        list(system_criteria.get(status, []) or [])
+        + list(criteria.get(status, []) or [])
+    ):
         condition = _criterion_to_condition(entry)
-        if condition and condition not in seen:
-            custom_filters.append(condition)
+        if not condition:
+            raise ValidationError("Malformed mandatory enrollment criterion.")
+        if condition not in seen:
+            combined_filters.append(condition)
             seen.add(condition)
-    return custom_filters
+    for condition in operator_filters:
+        if condition not in seen:
+            combined_filters.append(condition)
+            seen.add(condition)
+    return combined_filters
 
 
 def _validate_operator_filters(custom_filters, benefit_plan):
