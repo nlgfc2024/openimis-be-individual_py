@@ -11,12 +11,29 @@ from individual.services import (
     build_group_enrollment_queryset,
     build_individual_enrollment_queryset,
 )
+from individual.custom_filters import IndividualCustomFilterWizard
 from individual.tests.test_helpers import create_group, create_individual
 from social_protection.tests.test_helpers import create_benefit_plan
 from social_protection.apps import SocialProtectionConfig
 
 
 class EnrollmentCriterionNormalizationTest(SimpleTestCase):
+    def test_custom_filter_string_cast_decodes_json_quoting(self):
+        wizard = IndividualCustomFilterWizard()
+        cast_value = wizard._IndividualCustomFilterWizard__cast_value
+
+        self.assertEqual(cast_value('"Karonga"', 'string'), "Karonga")
+        self.assertEqual(
+            cast_value('"Nkhata \\"Bay\\""', 'string'),
+            'Nkhata "Bay"',
+        )
+
+    def test_custom_filter_string_cast_preserves_legacy_unquoted_values(self):
+        wizard = IndividualCustomFilterWizard()
+        cast_value = wizard._IndividualCustomFilterWizard__cast_value
+
+        self.assertEqual(cast_value("Karonga", "string"), "Karonga")
+
     def test_canonical_string_value_is_quoted_for_custom_filter_casting(self):
         condition = _criterion_to_condition({
             "field": "validation_status",

@@ -72,7 +72,11 @@ class IndividualCustomFilterWizard(CustomFilterWizardInterface):
         if value_type == 'integer':
             return int(value)
         elif value_type == 'string':
-            return str(value[1:-1])
+            try:
+                decoded = json.loads(value)
+            except (TypeError, json.JSONDecodeError):
+                return str(value)
+            return decoded if isinstance(decoded, str) else str(value)
         elif value_type == 'numeric':
             return float(value)
         elif value_type == 'boolean':
