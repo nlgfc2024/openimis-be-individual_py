@@ -27,8 +27,8 @@ from individual.models import Individual, IndividualDataSource, Group, \
     GroupIndividual, IndividualDataSourceUpload, IndividualDataUploadRecords, GroupDataSource
 from location.apps import LocationConfig
 from individual.services import (
-    build_group_enrollment_queryset,
-    build_individual_enrollment_queryset,
+    build_group_enrollment_selection,
+    build_individual_enrollment_selection,
 )
 
 
@@ -232,11 +232,12 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
         custom_filters = kwargs.get("customFilters", None)
         benefit_plan_id = kwargs.get("benefitPlanId")
         status = kwargs.get("status")
-        query = build_individual_enrollment_queryset(
+        selection = build_individual_enrollment_selection(
             custom_filters,
             benefit_plan_id,
             status,
         )
+        query = selection["individual_query_with_filters"]
         # Aggregation for selected individuals
         number_of_selected_individuals = query.count()
 
@@ -259,7 +260,11 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             number_of_individuals_not_assigned_to_programme=individuals_not_assigned_to_programme,
             number_of_individuals_assigned_to_programme=individuals_assigned_to_programme,
             number_of_individuals_assigned_to_selected_programme=individuals_assigned_to_selected_programme,
-            number_of_individuals_to_upload=number_of_individuals_to_upload
+            number_of_individuals_to_upload=selection["will_enrol"],
+            pool_size=selection["pool_size"],
+            cap_applied=selection["cap_applied"],
+            will_enrol=selection["will_enrol"],
+            enrolment_ranking=selection["ranking"],
         )
 
     def resolve_individual_history(self, info, **kwargs):
@@ -426,11 +431,12 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
         custom_filters = kwargs.get("customFilters", None)
         benefit_plan_id = kwargs.get("benefitPlanId")
         status = kwargs.get("status")
-        query = build_group_enrollment_queryset(
+        selection = build_group_enrollment_selection(
             custom_filters,
             benefit_plan_id,
             status,
         )
+        query = selection["group_query_with_filters"]
         # Aggregation for selected groups
         number_of_selected_groups = query.count()
 
@@ -453,7 +459,11 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             number_of_groups_not_assigned_to_programme=groups_not_assigned_to_programme,
             number_of_groups_assigned_to_programme=groups_assigned_to_programme,
             number_of_groups_assigned_to_selected_programme=groups_assigned_to_selected_programme,
-            number_of_groups_to_upload=number_of_groups_to_upload
+            number_of_groups_to_upload=selection["will_enrol"],
+            pool_size=selection["pool_size"],
+            cap_applied=selection["cap_applied"],
+            will_enrol=selection["will_enrol"],
+            enrolment_ranking=selection["ranking"],
         )
 
     def resolve_global_schema(self, info):

@@ -10,7 +10,10 @@ from individual.services import (
     _criterion_to_condition,
     build_group_enrollment_queryset,
     build_individual_enrollment_queryset,
+    build_individual_enrollment_selection,
 )
+from individual.enrolment_ranking import calculate_cap, validate_ranking_spec
+from individual.models import Individual
 from individual.custom_filters import GroupCustomFilterWizard, IndividualCustomFilterWizard
 from individual.tests.test_helpers import create_group, create_individual
 from social_protection.tests.test_helpers import create_benefit_plan
@@ -77,18 +80,34 @@ class EnrollmentCriterionNormalizationTest(SimpleTestCase):
             condition,
         )
 
-    @patch("individual.services.build_individual_enrollment_queryset")
+    def test_ranking_validation_rejects_unknown_field_and_bad_limit(self):
+        with self.assertRaisesMessage(ValidationError, "Unsupported ranking field"):
+            validate_ranking_spec(
+                {"order_by": ["does_not_exist"]}, Individual
+            )
+        with self.assertRaisesMessage(ValidationError, "between 1 and 100"):
+            validate_ranking_spec(
+                {"order_by": ["id"], "limit": {"percentage": 101}},
+                Individual,
+            )
+
+    def test_cap_uses_ceiling_and_smaller_remaining_capacity(self):
+        self.assertEqual(calculate_cap(7, 20, None), (2, True))
+        self.assertEqual(calculate_cap(100, 20, 15, 3), (12, True))
+        self.assertEqual(calculate_cap(100, 20, 10, 12), (0, True))
+        self.assertEqual(calculate_cap(7, None, None), (7, False))
+
+    @patch("individual.services.build_individual_enrollment_selection")
     def test_confirmation_signal_result_contains_authoritative_queryset(
         self,
-        build_queryset,
+        build_selection,
     ):
         authoritative_queryset = Mock()
-        assigned_queryset = Mock()
         not_assigned_queryset = Mock()
-        authoritative_queryset.filter.return_value = assigned_queryset
-        authoritative_queryset.exclude.return_value = not_assigned_queryset
-        assigned_queryset.values_list.return_value = []
-        build_queryset.return_value = authoritative_queryset
+        build_selection.return_value = {
+            "individual_query_with_filters": authoritative_queryset,
+            "individuals_not_assigned_to_selected_programme": not_assigned_queryset,
+        }
 
         service = IndividualService(Mock())
         result = IndividualService.select_individuals_to_benefit_plan.__wrapped__(
@@ -283,6 +302,45 @@ class AuthoritativeEnrollmentTest(TestCase):
                 benefit_plan_id=str(group_plan.id),
                 status="ACTIVE",
             )
+
+    def test_numeric_json_ranking_and_percentage_cap_are_applied_together(self):
+        benefit_plan = create_benefit_plan(self.user.username, payload_override={
+            "type": "INDIVIDUAL",
+            "max_beneficiaries": 10,
+            "beneficiary_data_schema": {"properties": {}},
+            "json_ext": {
+                "enrolment_ranking": {
+                    "*": {
+                        "order_by": [{
+                            "field": "json_ext__score",
+                            "cast": "int",
+                            "direction": "asc",
+                            "nulls": "last",
+                        }],
+                        "tie_breaker": "id",
+                        "limit": {
+                            "percentage": 50,
+                            "respect_max_beneficiaries": True,
+                        },
+                    }
+                }
+            },
+        })
+        ranked = create_individual(self.user.username, {"json_ext": {"score": "9"}})
+        second = create_individual(self.user.username, {"json_ext": {"score": "10"}})
+        create_individual(self.user.username, {"json_ext": {"score": "100"}})
+
+        selection = build_individual_enrollment_selection(
+            [], str(benefit_plan.id), "ACTIVE", self.user
+        )
+
+        self.assertEqual(selection["pool_size"], 3)
+        self.assertEqual(selection["will_enrol"], 2)
+        self.assertEqual(selection["cap_applied"], 2)
+        self.assertEqual(
+            list(selection["individuals_not_assigned_to_selected_programme"].values_list("id", flat=True)),
+            [ranked.id, second.id],
+        )
 
     def test_rejects_unknown_status(self):
         benefit_plan = self._benefit_plan("INDIVIDUAL")

@@ -29,6 +29,7 @@ from individual.utils import (
     fetch_summary_of_valid_items,
     fetch_summary_of_broken_items
 )
+from individual.enrolment_ranking import rank_and_cap_queryset
 from individual.validation import (
     IndividualValidation,
     IndividualDataSourceValidation,
@@ -249,6 +250,48 @@ def build_group_enrollment_queryset(custom_filters, benefit_plan_id, status):
     ).distinct()
 
 
+def build_individual_enrollment_selection(custom_filters, benefit_plan_id, status, user=None):
+    benefit_plan = _load_enrollment_benefit_plan(benefit_plan_id, status, "INDIVIDUAL")
+    eligible = build_individual_enrollment_queryset(custom_filters, benefit_plan_id, status)
+    assigned = eligible.filter(beneficiary__benefit_plan_id=benefit_plan_id)
+    unassigned = eligible.exclude(id__in=assigned.values_list("id", flat=True))
+    from social_protection.models import Beneficiary
+    current_count = Beneficiary.objects.filter(
+        benefit_plan_id=benefit_plan_id, status=status, is_deleted=False
+    ).count()
+    selected, metadata = rank_and_cap_queryset(unassigned, benefit_plan, status, current_count)
+    return {
+        "individuals_assigned_to_selected_programme": assigned,
+        "individuals_not_assigned_to_selected_programme": selected,
+        "individual_query_with_filters": eligible,
+        "benefit_plan_id": benefit_plan_id,
+        "status": status,
+        "user": user,
+        **metadata,
+    }
+
+
+def build_group_enrollment_selection(custom_filters, benefit_plan_id, status, user=None):
+    benefit_plan = _load_enrollment_benefit_plan(benefit_plan_id, status, "GROUP")
+    eligible = build_group_enrollment_queryset(custom_filters, benefit_plan_id, status)
+    assigned = eligible.filter(groupbeneficiary__benefit_plan_id=benefit_plan_id)
+    unassigned = eligible.exclude(id__in=assigned.values_list("id", flat=True))
+    from social_protection.models import GroupBeneficiary
+    current_count = GroupBeneficiary.objects.filter(
+        benefit_plan_id=benefit_plan_id, status=status, is_deleted=False
+    ).count()
+    selected, metadata = rank_and_cap_queryset(unassigned, benefit_plan, status, current_count)
+    return {
+        "groups_assigned_to_selected_programme": assigned,
+        "groups_not_assigned_to_selected_programme": selected,
+        "group_query_with_filters": eligible,
+        "benefit_plan_id": benefit_plan_id,
+        "status": status,
+        "user": user,
+        **metadata,
+    }
+
+
 class IndividualService(BaseService, UpdateCheckerLogicServiceMixin, DeleteCheckerLogicServiceMixin):
     @register_service_signal('individual_service.create')
     def create(self, obj_data):
@@ -286,25 +329,9 @@ class IndividualService(BaseService, UpdateCheckerLogicServiceMixin, DeleteCheck
 
     @register_service_signal('individual_service.select_individuals_to_benefit_plan')
     def select_individuals_to_benefit_plan(self, custom_filters, benefit_plan_id, status, user):
-        individual_query_with_filters = build_individual_enrollment_queryset(
-            custom_filters,
-            benefit_plan_id,
-            status,
+        return build_individual_enrollment_selection(
+            custom_filters, benefit_plan_id, status, user
         )
-        individuals_assigned = individual_query_with_filters.filter(
-            beneficiary__benefit_plan_id=benefit_plan_id
-        )
-        individuals_not_assigned = individual_query_with_filters.exclude(
-            id__in=individuals_assigned.values_list('id', flat=True)
-        )
-        return {
-            "individuals_assigned_to_selected_programme": individuals_assigned,
-            "individuals_not_assigned_to_selected_programme": individuals_not_assigned,
-            "individual_query_with_filters": individual_query_with_filters,
-            "benefit_plan_id": benefit_plan_id,
-            "status": status,
-            "user": user,
-        }
 
     @register_service_signal('individual_service.create_accept_enrolment_task')
     def create_accept_enrolment_task(self, individual_queryset, benefit_plan_id):
@@ -458,25 +485,9 @@ class GroupService(
 
     @register_service_signal('group_service.select_groups_to_benefit_plan')
     def select_groups_to_benefit_plan(self, custom_filters, benefit_plan_id, status, user):
-        group_query_with_filters = build_group_enrollment_queryset(
-            custom_filters,
-            benefit_plan_id,
-            status,
+        return build_group_enrollment_selection(
+            custom_filters, benefit_plan_id, status, user
         )
-        groups_assigned = group_query_with_filters.filter(
-            groupbeneficiary__benefit_plan_id=benefit_plan_id
-        )
-        groups_not_assigned = group_query_with_filters.exclude(
-            id__in=groups_assigned.values_list('id', flat=True)
-        )
-        return {
-            "groups_assigned_to_selected_programme": groups_assigned,
-            "groups_not_assigned_to_selected_programme": groups_not_assigned,
-            "group_query_with_filters": group_query_with_filters,
-            "benefit_plan_id": benefit_plan_id,
-            "status": status,
-            "user": user,
-        }
 
 
 class CreateGroupAndMoveIndividualService(CreateCheckerLogicServiceMixin):

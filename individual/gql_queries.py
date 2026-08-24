@@ -281,6 +281,10 @@ class IndividualSummaryEnrollmentGQLType(graphene.ObjectType):
     number_of_individuals_assigned_to_programme = graphene.String()
     number_of_individuals_assigned_to_selected_programme = graphene.String()
     number_of_individuals_to_upload = graphene.String()
+    pool_size = graphene.Int()
+    cap_applied = graphene.Int()
+    will_enrol = graphene.Int()
+    enrolment_ranking = graphene.JSONString()
 
 
 class GroupSummaryEnrollmentGQLType(graphene.ObjectType):
@@ -290,6 +294,10 @@ class GroupSummaryEnrollmentGQLType(graphene.ObjectType):
     number_of_groups_assigned_to_programme = graphene.String()
     number_of_groups_assigned_to_selected_programme = graphene.String()
     number_of_groups_to_upload = graphene.String()
+    pool_size = graphene.Int()
+    cap_applied = graphene.Int()
+    will_enrol = graphene.Int()
+    enrolment_ranking = graphene.JSONString()
 
 
 class GlobalSchemaType(graphene.ObjectType):
