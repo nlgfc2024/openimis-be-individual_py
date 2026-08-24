@@ -11,13 +11,20 @@ from individual.services import (
     build_group_enrollment_queryset,
     build_individual_enrollment_queryset,
     build_individual_enrollment_selection,
+    build_group_enrollment_selection,
 )
-from individual.enrolment_ranking import calculate_cap, validate_ranking_spec
+from individual.enrolment_ranking import (
+    calculate_cap,
+    build_order_by,
+    load_ranking_spec,
+    validate_ranking_spec,
+)
 from individual.models import Individual
 from individual.custom_filters import GroupCustomFilterWizard, IndividualCustomFilterWizard
 from individual.tests.test_helpers import create_group, create_individual
 from social_protection.tests.test_helpers import create_benefit_plan
 from social_protection.apps import SocialProtectionConfig
+from social_protection.models import Beneficiary
 
 
 class EnrollmentCriterionNormalizationTest(SimpleTestCase):
@@ -96,6 +103,38 @@ class EnrollmentCriterionNormalizationTest(SimpleTestCase):
         self.assertEqual(calculate_cap(100, 20, 15, 3), (12, True))
         self.assertEqual(calculate_cap(100, 20, 10, 12), (0, True))
         self.assertEqual(calculate_cap(7, None, None), (7, False))
+
+    def test_tie_breaker_is_always_normalised_to_last_position(self):
+        order_items, _, _ = validate_ranking_spec(
+            {"order_by": ["id", "last_name"], "tie_breaker": "id"},
+            Individual,
+        )
+        self.assertEqual([item["field"] for item in order_items], ["last_name", "id"])
+
+    def test_string_json_ext_snapshot_uses_status_then_wildcard(self):
+        plan = Mock(json_ext='{"enrolment_ranking":{"*":{"order_by":["id"]},"ACTIVE":{"order_by":["-id"]}}}')
+        self.assertEqual(load_ranking_spec(plan, "ACTIVE")["order_by"], ["-id"])
+        self.assertEqual(load_ranking_spec(plan, "POTENTIAL")["order_by"], ["id"])
+
+    def test_string_and_object_ordering_compile_as_annotated_distinct_sql(self):
+        order_items, _, _ = validate_ranking_spec({
+            "order_by": [
+                "-dob",
+                {
+                    "field": "json_ext__score",
+                    "cast": "int",
+                    "direction": "asc",
+                    "nulls": "last",
+                },
+            ]
+        }, Individual)
+        query = build_order_by(Individual.objects.all().distinct(), order_items)
+        sql = str(query.query)
+
+        self.assertIn("DISTINCT", sql)
+        self.assertIn("_enrolment_rank_", sql)
+        self.assertIn("NULLS LAST", sql)
+        self.assertIn("integer", sql)
 
     @patch("individual.services.build_individual_enrollment_selection")
     def test_confirmation_signal_result_contains_authoritative_queryset(
@@ -341,6 +380,83 @@ class AuthoritativeEnrollmentTest(TestCase):
             list(selection["individuals_not_assigned_to_selected_programme"].values_list("id", flat=True)),
             [ranked.id, second.id],
         )
+        self.assertFalse(selection["individuals_not_assigned_to_selected_programme"].query.is_sliced)
+        self.assertEqual(selection["selected_ids"], [ranked.id, second.id])
+
+    def test_remaining_status_capacity_limits_cumulative_enrollment(self):
+        benefit_plan = create_benefit_plan(self.user.username, payload_override={
+            "type": "INDIVIDUAL",
+            "max_beneficiaries": 2,
+            "json_ext": {
+                "enrolment_ranking": {
+                    "ACTIVE": {
+                        "order_by": ["id"],
+                        "limit": {"percentage": 100},
+                    }
+                }
+            },
+        })
+        existing = create_individual(self.user.username)
+        create_individual(self.user.username)
+        create_individual(self.user.username)
+        beneficiary = Beneficiary(
+            individual=existing,
+            benefit_plan=benefit_plan,
+            status="ACTIVE",
+            json_ext={},
+        )
+        beneficiary.save(username=self.user.username)
+
+        selection = build_individual_enrollment_selection(
+            [], str(benefit_plan.id), "ACTIVE", self.user
+        )
+
+        self.assertEqual(selection["pool_size"], 2)
+        self.assertEqual(selection["cap_applied"], 1)
+        self.assertEqual(selection["will_enrol"], 1)
+
+    def test_group_ranking_cap_and_nulls_last(self):
+        benefit_plan = create_benefit_plan(self.user.username, payload_override={
+            "type": "GROUP",
+            "json_ext": {
+                "enrolment_ranking": {
+                    "*": {
+                        "order_by": [{
+                            "field": "json_ext__score",
+                            "cast": "int",
+                            "direction": "asc",
+                            "nulls": "last",
+                        }],
+                        "limit": {"percentage": 50},
+                    }
+                }
+            },
+        })
+        first = create_group(self.user.username, {"json_ext": {"score": "9"}})
+        second = create_group(self.user.username, {"json_ext": {"score": "10"}})
+        create_group(self.user.username, {"json_ext": {}})
+
+        selection = build_group_enrollment_selection(
+            [], str(benefit_plan.id), "POTENTIAL", self.user
+        )
+
+        self.assertEqual(selection["will_enrol"], 2)
+        self.assertEqual(
+            list(selection["groups_not_assigned_to_selected_programme"].values_list("id", flat=True))[:2],
+            [first.id, second.id],
+        )
+
+    def test_missing_ranking_preserves_uncapped_behavior(self):
+        benefit_plan = self._benefit_plan("INDIVIDUAL")
+        create_individual(self.user.username, {"json_ext": {"validation_status": "VERIFIED"}})
+
+        selection = build_individual_enrollment_selection(
+            [], str(benefit_plan.id), "ACTIVE", self.user
+        )
+
+        self.assertIsNone(selection["ranking"])
+        self.assertIsNone(selection["cap_applied"])
+        self.assertEqual(selection["pool_size"], selection["will_enrol"])
 
     def test_rejects_unknown_status(self):
         benefit_plan = self._benefit_plan("INDIVIDUAL")

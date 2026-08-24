@@ -47,12 +47,12 @@ def _validate_model_path(model, path):
     parts = path.split("__")
     current_model = model
     for index, part in enumerate(parts):
-        if index > 0 and parts[0] == "json_ext":
-            return
         try:
             field = current_model._meta.get_field(part)
         except (FieldDoesNotExist, AttributeError) as exc:
             raise ValidationError(f"Unsupported ranking field: {path}.") from exc
+        if index == 0 and part == "json_ext" and len(parts) > 1:
+            return
         if index < len(parts) - 1:
             current_model = field.related_model
             if current_model is None:
@@ -99,8 +99,8 @@ def validate_ranking_spec(ranking, model):
 
     tie_breaker = ranking.get("tie_breaker", "id")
     _validate_model_path(model, tie_breaker)
-    if all(item["field"] != tie_breaker for item in normalised):
-        normalised.append({"field": tie_breaker, "direction": "asc"})
+    normalised = [item for item in normalised if item["field"] != tie_breaker]
+    normalised.append({"field": tie_breaker, "direction": "asc"})
 
     limit = ranking.get("limit", {})
     if limit is None:
@@ -180,6 +180,8 @@ def rank_and_cap_queryset(queryset, benefit_plan, status, current_enrolment_coun
             "cap_applied": None,
             "will_enrol": pool_size,
             "ranking": None,
+            "percentage": None,
+            "selected_ids": None,
         }
 
     order_items, percentage, respect_max = validate_ranking_spec(
@@ -194,11 +196,15 @@ def rank_and_cap_queryset(queryset, benefit_plan, status, current_enrolment_coun
         respect_max,
     )
     will_enrol = min(pool_size, cap)
-    return ranked[:will_enrol], {
+    ranked_ids = list(ranked.values_list("id", flat=True)[:will_enrol])
+    capped = build_order_by(queryset.filter(id__in=ranked_ids), order_items)
+    return capped, {
         "pool_size": pool_size,
         "cap_applied": cap if has_limit else None,
         "will_enrol": will_enrol,
         "ranking": ranking,
+        "percentage": percentage,
+        "selected_ids": ranked_ids,
     }
 
 

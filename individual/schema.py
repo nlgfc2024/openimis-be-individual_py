@@ -4,7 +4,7 @@ import graphene_django_optimizer as gql_optimizer
 import pandas as pd
 
 from django.contrib.auth.models import AnonymousUser
-from django.db.models import Q, OuterRef, Subquery
+from django.db.models import Case, IntegerField, Q, OuterRef, Subquery, When
 
 from core.custom_filters import CustomFilterWizardStorage
 from core.gql.export_mixin import ExportableQueryMixin
@@ -73,6 +73,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
         filterNotAttachedToGroup=graphene.Boolean(),
         parent_location=graphene.String(),
         parent_location_level=graphene.Int(),
+        enrollmentCandidateIds=graphene.List(of_type=graphene.String),
     )
 
     individual_history = OrderedDjangoFilterConnectionField(
@@ -117,6 +118,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
         benefitPlanToEnroll=graphene.String(),
         parent_location=graphene.String(),
         parent_location_level=graphene.Int(),
+        enrollmentCandidateIds=graphene.List(of_type=graphene.String),
     )
 
     group_history = OrderedDjangoFilterConnectionField(
@@ -198,6 +200,10 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
                 )
             )
 
+        enrollment_candidate_ids = kwargs.get("enrollmentCandidateIds")
+        if enrollment_candidate_ids is not None:
+            filters.append(Q(id__in=enrollment_candidate_ids))
+
         filter_not_attached_to_group = kwargs.get("filterNotAttachedToGroup")
         if filter_not_attached_to_group:
             subquery = GroupIndividual.objects.filter(
@@ -223,6 +229,17 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
                 custom_filters,
                 query,
             )
+
+        if enrollment_candidate_ids:
+            query = query.annotate(
+                _enrollment_candidate_order=Case(
+                    *[
+                        When(id=value, then=position)
+                        for position, value in enumerate(enrollment_candidate_ids)
+                    ],
+                    output_field=IntegerField(),
+                )
+            ).order_by("_enrollment_candidate_order")
 
         return gql_optimizer.query(query, info)
 
@@ -265,6 +282,11 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             cap_applied=selection["cap_applied"],
             will_enrol=selection["will_enrol"],
             enrolment_ranking=selection["ranking"],
+            percentage=selection["percentage"],
+            selected_ids=(
+                [str(value) for value in selection["selected_ids"]]
+                if selection["selected_ids"] is not None else None
+            ),
         )
 
     def resolve_individual_history(self, info, **kwargs):
@@ -348,6 +370,10 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
                 )
             )
 
+        enrollment_candidate_ids = kwargs.get("enrollmentCandidateIds")
+        if enrollment_candidate_ids is not None:
+            filters.append(Q(id__in=enrollment_candidate_ids))
+
         parent_location = kwargs.get('parent_location')
         parent_location_level = kwargs.get('parent_location_level')
         if parent_location is not None and parent_location_level is not None:
@@ -364,6 +390,16 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
                 custom_filters,
                 query
             )
+        if enrollment_candidate_ids:
+            query = query.annotate(
+                _enrollment_candidate_order=Case(
+                    *[
+                        When(id=value, then=position)
+                        for position, value in enumerate(enrollment_candidate_ids)
+                    ],
+                    output_field=IntegerField(),
+                )
+            ).order_by("_enrollment_candidate_order")
         return gql_optimizer.query(query, info)
 
     def resolve_group_history(self, info, **kwargs):
@@ -464,6 +500,11 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             cap_applied=selection["cap_applied"],
             will_enrol=selection["will_enrol"],
             enrolment_ranking=selection["ranking"],
+            percentage=selection["percentage"],
+            selected_ids=(
+                [str(value) for value in selection["selected_ids"]]
+                if selection["selected_ids"] is not None else None
+            ),
         )
 
     def resolve_global_schema(self, info):
