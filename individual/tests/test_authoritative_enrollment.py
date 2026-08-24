@@ -11,7 +11,7 @@ from individual.services import (
     build_group_enrollment_queryset,
     build_individual_enrollment_queryset,
 )
-from individual.custom_filters import IndividualCustomFilterWizard
+from individual.custom_filters import GroupCustomFilterWizard, IndividualCustomFilterWizard
 from individual.tests.test_helpers import create_group, create_individual
 from social_protection.tests.test_helpers import create_benefit_plan
 from social_protection.apps import SocialProtectionConfig
@@ -33,6 +33,30 @@ class EnrollmentCriterionNormalizationTest(SimpleTestCase):
         cast_value = wizard._IndividualCustomFilterWizard__cast_value
 
         self.assertEqual(cast_value("Karonga", "string"), "Karonga")
+
+    def test_individual_custom_filter_preserves_equals_in_string_value(self):
+        query = Mock()
+        query.filter.return_value = query
+
+        result = IndividualCustomFilterWizard().apply_filter_to_queryset(
+            ['district__exact__string="a=b"'],
+            query,
+        )
+
+        query.filter.assert_called_once_with(json_ext__district__exact="a=b")
+        self.assertIs(result, query)
+
+    def test_group_custom_filter_preserves_equals_in_string_value(self):
+        query = Mock()
+        query.filter.return_value = query
+
+        result = GroupCustomFilterWizard().apply_filter_to_queryset(
+            ['district__exact__string="a=b"'],
+            query,
+        )
+
+        query.filter.assert_called_once_with(json_ext__district__exact="a=b")
+        self.assertIs(result, query)
 
     def test_canonical_string_value_is_quoted_for_custom_filter_casting(self):
         condition = _criterion_to_condition({
