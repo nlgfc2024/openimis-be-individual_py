@@ -38,7 +38,7 @@ class IndividualCustomFilterWizard(CustomFilterWizardInterface):
 
     def apply_filter_to_queryset(self, custom_filters: List[namedtuple], query: QuerySet, relation=None) -> QuerySet:
         for filter_part in custom_filters:
-            field, value = filter_part.split('=')
+            field, value = filter_part.split('=', 1)
             field, value_type = field.rsplit('__', 1)
             value = self.__cast_value(value, value_type)
             filter_kwargs = {f"{relation}__json_ext__{field}" if relation else f"json_ext__{field}": value}
@@ -72,7 +72,11 @@ class IndividualCustomFilterWizard(CustomFilterWizardInterface):
         if value_type == 'integer':
             return int(value)
         elif value_type == 'string':
-            return str(value[1:-1])
+            try:
+                decoded = json.loads(value)
+            except (TypeError, json.JSONDecodeError):
+                return str(value)
+            return decoded if isinstance(decoded, str) else str(value)
         elif value_type == 'numeric':
             return float(value)
         elif value_type == 'boolean':

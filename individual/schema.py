@@ -26,6 +26,10 @@ from individual.gql_queries import IndividualGQLType, IndividualHistoryGQLType, 
 from individual.models import Individual, IndividualDataSource, Group, \
     GroupIndividual, IndividualDataSourceUpload, IndividualDataUploadRecords, GroupDataSource
 from location.apps import LocationConfig
+from individual.services import (
+    build_group_enrollment_queryset,
+    build_individual_enrollment_queryset,
+)
 
 
 def patch_details(data_df: pd.DataFrame):
@@ -141,7 +145,8 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
     individual_enrollment_summary = graphene.Field(
         IndividualSummaryEnrollmentGQLType,
         customFilters=graphene.List(of_type=graphene.String),
-        benefitPlanId=graphene.String()
+        benefitPlanId=graphene.String(required=True),
+        status=graphene.String(required=True),
     )
 
     individual_data_upload_history = OrderedDjangoFilterConnectionField(
@@ -156,7 +161,8 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
     group_enrollment_summary = graphene.Field(
         GroupSummaryEnrollmentGQLType,
         customFilters=graphene.List(of_type=graphene.String),
-        benefitPlanId=graphene.String()
+        benefitPlanId=graphene.String(required=True),
+        status=graphene.String(required=True),
     )
 
     global_schema = graphene.Field(GlobalSchemaType)
@@ -223,22 +229,14 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
     def resolve_individual_enrollment_summary(self, info, **kwargs):
         Query._check_permissions(info.context.user,
                                  IndividualConfig.gql_individual_search_perms)
-        subquery = GroupIndividual.objects.filter(
-            individual=OuterRef('pk')
-        ).exclude(
-            is_deleted=True
-        ).values('individual')
-        query = Individual.objects.filter(is_deleted=False)
         custom_filters = kwargs.get("customFilters", None)
-        benefit_plan_id = kwargs.get("benefitPlanId", None)
-        if custom_filters:
-            query = CustomFilterWizardStorage.build_custom_filters_queryset(
-                Query.module_name,
-                Query.object_type,
-                custom_filters,
-                query,
-            )
-        query = query.filter(~Q(pk__in=Subquery(subquery))).distinct()
+        benefit_plan_id = kwargs.get("benefitPlanId")
+        status = kwargs.get("status")
+        query = build_individual_enrollment_queryset(
+            custom_filters,
+            benefit_plan_id,
+            status,
+        )
         # Aggregation for selected individuals
         number_of_selected_individuals = query.count()
 
@@ -425,16 +423,14 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
     def resolve_group_enrollment_summary(self, info, **kwargs):
         Query._check_permissions(info.context.user,
                                  IndividualConfig.gql_group_search_perms)
-        query = Group.objects.filter(is_deleted=False)
         custom_filters = kwargs.get("customFilters", None)
-        benefit_plan_id = kwargs.get("benefitPlanId", None)
-        if custom_filters:
-            query = CustomFilterWizardStorage.build_custom_filters_queryset(
-                Query.module_name,
-                "Group",
-                custom_filters,
-                query,
-            )
+        benefit_plan_id = kwargs.get("benefitPlanId")
+        status = kwargs.get("status")
+        query = build_group_enrollment_queryset(
+            custom_filters,
+            benefit_plan_id,
+            status,
+        )
         # Aggregation for selected groups
         number_of_selected_groups = query.count()
 
