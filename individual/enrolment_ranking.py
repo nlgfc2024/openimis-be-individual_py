@@ -2,6 +2,7 @@ import json
 import math
 
 from django.core.exceptions import FieldDoesNotExist, ValidationError
+from django.db import DataError
 from django.db.models import CharField, DateField, F, FloatField, IntegerField
 from django.db.models.fields.json import KeyTextTransform
 from django.db.models.functions import Cast
@@ -166,7 +167,25 @@ def build_order_by(queryset, order_items):
     return queryset.annotate(**annotations).order_by(*ordering)
 
 
-def rank_and_cap_queryset(queryset, benefit_plan, status, current_enrolment_count):
+def _cast_error(order_items, exc):
+    casts = ", ".join(
+        f"{item['field']} ({item['cast']})"
+        for item in order_items
+        if item.get("cast")
+    )
+    raise ValidationError(
+        "Enrollment ranking could not cast stored values for "
+        f"{casts}. Check that the data matches beneficiary_data_schema."
+    ) from exc
+
+
+def rank_and_cap_queryset(
+    queryset,
+    benefit_plan,
+    status,
+    current_enrolment_count,
+    materialize_selected_ids=True,
+):
     """Apply deterministic ordering and the configured intake ceiling.
 
     The returned metadata is shared by preview and execution. ``pool_size`` is the
@@ -196,8 +215,23 @@ def rank_and_cap_queryset(queryset, benefit_plan, status, current_enrolment_coun
         respect_max,
     )
     will_enrol = min(pool_size, cap)
-    ranked_ids = list(ranked.values_list("id", flat=True)[:will_enrol])
-    capped = build_order_by(queryset.filter(id__in=ranked_ids), order_items)
+    if materialize_selected_ids:
+        try:
+            ranked_ids = list(ranked.values_list("id", flat=True)[:will_enrol])
+        except DataError as exc:
+            _cast_error(order_items, exc)
+        capped = build_order_by(queryset.filter(id__in=ranked_ids), order_items)
+    else:
+        # The preview connection can paginate this ordered, capped query directly.
+        # Avoid materialising the complete cohort and rebuilding a large IN clause
+        # on every page request; confirmation still uses the reusable queryset above.
+        if any(item.get("cast") for item in order_items) and will_enrol:
+            try:
+                list(ranked.values_list("id", flat=True)[:1])
+            except DataError as exc:
+                _cast_error(order_items, exc)
+        ranked_ids = None
+        capped = ranked[:will_enrol]
     return capped, {
         "pool_size": pool_size,
         "cap_applied": cap if has_limit else None,

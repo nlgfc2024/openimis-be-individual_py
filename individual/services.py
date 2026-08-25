@@ -250,7 +250,13 @@ def build_group_enrollment_queryset(custom_filters, benefit_plan_id, status):
     ).distinct()
 
 
-def build_individual_enrollment_selection(custom_filters, benefit_plan_id, status, user=None):
+def build_individual_enrollment_selection(
+    custom_filters,
+    benefit_plan_id,
+    status,
+    user=None,
+    materialize_selected_ids=True,
+):
     benefit_plan = _load_enrollment_benefit_plan(benefit_plan_id, status, "INDIVIDUAL")
     eligible = build_individual_enrollment_queryset(custom_filters, benefit_plan_id, status)
     assigned = eligible.filter(beneficiary__benefit_plan_id=benefit_plan_id)
@@ -259,7 +265,13 @@ def build_individual_enrollment_selection(custom_filters, benefit_plan_id, statu
     current_count = Beneficiary.objects.filter(
         benefit_plan_id=benefit_plan_id, status=status, is_deleted=False
     ).count()
-    selected, metadata = rank_and_cap_queryset(unassigned, benefit_plan, status, current_count)
+    selected, metadata = rank_and_cap_queryset(
+        unassigned,
+        benefit_plan,
+        status,
+        current_count,
+        materialize_selected_ids=materialize_selected_ids,
+    )
     return {
         "individuals_assigned_to_selected_programme": assigned,
         "individuals_not_assigned_to_selected_programme": selected,
@@ -271,7 +283,13 @@ def build_individual_enrollment_selection(custom_filters, benefit_plan_id, statu
     }
 
 
-def build_group_enrollment_selection(custom_filters, benefit_plan_id, status, user=None):
+def build_group_enrollment_selection(
+    custom_filters,
+    benefit_plan_id,
+    status,
+    user=None,
+    materialize_selected_ids=True,
+):
     benefit_plan = _load_enrollment_benefit_plan(benefit_plan_id, status, "GROUP")
     eligible = build_group_enrollment_queryset(custom_filters, benefit_plan_id, status)
     assigned = eligible.filter(groupbeneficiary__benefit_plan_id=benefit_plan_id)
@@ -280,7 +298,13 @@ def build_group_enrollment_selection(custom_filters, benefit_plan_id, status, us
     current_count = GroupBeneficiary.objects.filter(
         benefit_plan_id=benefit_plan_id, status=status, is_deleted=False
     ).count()
-    selected, metadata = rank_and_cap_queryset(unassigned, benefit_plan, status, current_count)
+    selected, metadata = rank_and_cap_queryset(
+        unassigned,
+        benefit_plan,
+        status,
+        current_count,
+        materialize_selected_ids=materialize_selected_ids,
+    )
     return {
         "groups_assigned_to_selected_programme": assigned,
         "groups_not_assigned_to_selected_programme": selected,

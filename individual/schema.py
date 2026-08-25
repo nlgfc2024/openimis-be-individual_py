@@ -181,6 +181,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
                 benefit_plan_to_enroll,
                 enrollment_preview_status,
                 info.context.user,
+                materialize_selected_ids=False,
             )
             return gql_optimizer.query(
                 selection["individuals_not_assigned_to_selected_programme"],
@@ -348,6 +349,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
                 benefit_plan_to_enroll,
                 enrollment_preview_status,
                 info.context.user,
+                materialize_selected_ids=False,
             )
             return gql_optimizer.query(
                 selection["groups_not_assigned_to_selected_programme"],

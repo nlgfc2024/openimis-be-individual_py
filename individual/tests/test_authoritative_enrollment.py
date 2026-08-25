@@ -1,7 +1,8 @@
 import copy
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from django.core.exceptions import ValidationError
+from django.db import DataError
 from django.test import SimpleTestCase, TestCase
 
 from core.test_helpers import LogInHelper
@@ -17,6 +18,7 @@ from individual.enrolment_ranking import (
     calculate_cap,
     build_order_by,
     load_ranking_spec,
+    rank_and_cap_queryset,
     validate_ranking_spec,
 )
 from individual.models import Individual
@@ -137,6 +139,36 @@ class EnrollmentCriterionNormalizationTest(SimpleTestCase):
         self.assertIn("NULLS LAST", sql)
         self.assertIn("integer", sql)
 
+    @patch("individual.enrolment_ranking.build_order_by")
+    def test_cast_data_error_names_the_configured_field(self, build_ranking):
+        queryset = MagicMock()
+        queryset.count.return_value = 1
+        queryset.model = Individual
+        ranked = MagicMock()
+        build_ranking.return_value = ranked
+        ranked.values_list.return_value.__getitem__.return_value.__iter__.side_effect = (
+            DataError('invalid input syntax for type integer: "Poorer"')
+        )
+        benefit_plan = Mock(
+            json_ext={
+                "enrolment_ranking": {
+                    "*": {
+                        "order_by": [{
+                            "field": "json_ext__household_wealth_quintile",
+                            "cast": "int",
+                        }]
+                    }
+                }
+            },
+            max_beneficiaries=None,
+        )
+
+        with self.assertRaisesMessage(
+            ValidationError,
+            "json_ext__household_wealth_quintile (int)",
+        ):
+            rank_and_cap_queryset(queryset, benefit_plan, "ACTIVE", 0)
+
     @patch("individual.services.build_individual_enrollment_selection")
     def test_confirmation_signal_result_contains_authoritative_queryset(
         self,
@@ -193,7 +225,11 @@ class EnrollmentPreviewResolverTest(SimpleTestCase):
         )
 
         build_selection.assert_called_once_with(
-            ['score__gte__integer=10'], "plan-id", "ACTIVE", self.info.context.user
+            ['score__gte__integer=10'],
+            "plan-id",
+            "ACTIVE",
+            self.info.context.user,
+            materialize_selected_ids=False,
         )
         optimize.assert_called_once_with(selected, self.info)
         self.assertIs(result, selected)
@@ -218,7 +254,11 @@ class EnrollmentPreviewResolverTest(SimpleTestCase):
         )
 
         build_selection.assert_called_once_with(
-            ['score__gte__integer=10'], "plan-id", "POTENTIAL", self.info.context.user
+            ['score__gte__integer=10'],
+            "plan-id",
+            "POTENTIAL",
+            self.info.context.user,
+            materialize_selected_ids=False,
         )
         optimize.assert_called_once_with(selected, self.info)
         self.assertIs(result, selected)
@@ -439,6 +479,37 @@ class AuthoritativeEnrollmentTest(TestCase):
         )
         self.assertFalse(selection["individuals_not_assigned_to_selected_programme"].query.is_sliced)
         self.assertEqual(selection["selected_ids"], [ranked.id, second.id])
+
+    def test_preview_caps_the_ordered_query_without_materialising_ids(self):
+        benefit_plan = create_benefit_plan(self.user.username, payload_override={
+            "type": "INDIVIDUAL",
+            "max_beneficiaries": 10,
+            "beneficiary_data_schema": {"properties": {}},
+            "json_ext": {
+                "enrolment_ranking": {
+                    "*": {
+                        "order_by": ["id"],
+                        "limit": {"percentage": 50},
+                    }
+                }
+            },
+        })
+        first = create_individual(self.user.username)
+        second = create_individual(self.user.username)
+        create_individual(self.user.username)
+
+        selection = build_individual_enrollment_selection(
+            [],
+            str(benefit_plan.id),
+            "ACTIVE",
+            self.user,
+            materialize_selected_ids=False,
+        )
+        preview = selection["individuals_not_assigned_to_selected_programme"]
+
+        self.assertTrue(preview.query.is_sliced)
+        self.assertIsNone(selection["selected_ids"])
+        self.assertEqual(list(preview.values_list("id", flat=True)), [first.id, second.id])
 
     def test_remaining_status_capacity_limits_cumulative_enrollment(self):
         benefit_plan = create_benefit_plan(self.user.username, payload_override={
