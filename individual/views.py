@@ -70,7 +70,7 @@ def download_template_file(request):
         # Base fields and extra fields required in the template
         base_fields = IndividualConfig.individual_base_fields
         extra_fields = get_global_schema_fields()
-        all_fields = base_fields + extra_fields
+        all_fields = list(dict.fromkeys(base_fields + extra_fields))
 
         # Create an empty DataFrame with the required fields
         template_df = pd.DataFrame(columns=all_fields)
