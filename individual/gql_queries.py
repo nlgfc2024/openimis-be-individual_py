@@ -286,7 +286,6 @@ class IndividualSummaryEnrollmentGQLType(graphene.ObjectType):
     will_enrol = graphene.Int()
     enrolment_ranking = graphene.JSONString()
     percentage = graphene.Float()
-    selected_ids = graphene.List(graphene.String)
 
 
 class GroupSummaryEnrollmentGQLType(graphene.ObjectType):
@@ -301,7 +300,6 @@ class GroupSummaryEnrollmentGQLType(graphene.ObjectType):
     will_enrol = graphene.Int()
     enrolment_ranking = graphene.JSONString()
     percentage = graphene.Float()
-    selected_ids = graphene.List(graphene.String)
 
 
 class GlobalSchemaType(graphene.ObjectType):

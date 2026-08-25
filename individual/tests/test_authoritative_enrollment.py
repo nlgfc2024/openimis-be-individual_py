@@ -20,6 +20,7 @@ from individual.enrolment_ranking import (
     validate_ranking_spec,
 )
 from individual.models import Individual
+from individual.schema import Query
 from individual.custom_filters import GroupCustomFilterWizard, IndividualCustomFilterWizard
 from individual.tests.test_helpers import create_group, create_individual
 from social_protection.tests.test_helpers import create_benefit_plan
@@ -165,6 +166,62 @@ class EnrollmentCriterionNormalizationTest(SimpleTestCase):
             result["individuals_not_assigned_to_selected_programme"],
             not_assigned_queryset,
         )
+
+
+class EnrollmentPreviewResolverTest(SimpleTestCase):
+    def setUp(self):
+        self.info = Mock()
+        self.info.context.user = Mock()
+
+    @patch("individual.schema.gql_optimizer.query")
+    @patch("individual.schema.build_individual_enrollment_selection")
+    @patch.object(Query, "_check_permissions")
+    def test_individual_preview_is_derived_server_side(
+        self, check_permissions, build_selection, optimize
+    ):
+        selected = Mock()
+        build_selection.return_value = {
+            "individuals_not_assigned_to_selected_programme": selected,
+        }
+        optimize.return_value = selected
+
+        result = Query().resolve_individual(
+            self.info,
+            customFilters=['score__gte__integer=10'],
+            benefitPlanToEnroll="plan-id",
+            enrollmentPreviewStatus="ACTIVE",
+        )
+
+        build_selection.assert_called_once_with(
+            ['score__gte__integer=10'], "plan-id", "ACTIVE", self.info.context.user
+        )
+        optimize.assert_called_once_with(selected, self.info)
+        self.assertIs(result, selected)
+
+    @patch("individual.schema.gql_optimizer.query")
+    @patch("individual.schema.build_group_enrollment_selection")
+    @patch.object(Query, "_check_permissions")
+    def test_group_preview_is_derived_server_side(
+        self, check_permissions, build_selection, optimize
+    ):
+        selected = Mock()
+        build_selection.return_value = {
+            "groups_not_assigned_to_selected_programme": selected,
+        }
+        optimize.return_value = selected
+
+        result = Query().resolve_group(
+            self.info,
+            customFilters=['score__gte__integer=10'],
+            benefitPlanToEnroll="plan-id",
+            enrollmentPreviewStatus="POTENTIAL",
+        )
+
+        build_selection.assert_called_once_with(
+            ['score__gte__integer=10'], "plan-id", "POTENTIAL", self.info.context.user
+        )
+        optimize.assert_called_once_with(selected, self.info)
+        self.assertIs(result, selected)
 
 
 class AuthoritativeEnrollmentTest(TestCase):

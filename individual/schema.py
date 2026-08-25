@@ -4,7 +4,7 @@ import graphene_django_optimizer as gql_optimizer
 import pandas as pd
 
 from django.contrib.auth.models import AnonymousUser
-from django.db.models import Case, IntegerField, Q, OuterRef, Subquery, When
+from django.db.models import Q, OuterRef, Subquery
 
 from core.custom_filters import CustomFilterWizardStorage
 from core.gql.export_mixin import ExportableQueryMixin
@@ -73,7 +73,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
         filterNotAttachedToGroup=graphene.Boolean(),
         parent_location=graphene.String(),
         parent_location_level=graphene.Int(),
-        enrollmentCandidateIds=graphene.List(of_type=graphene.String),
+        enrollmentPreviewStatus=graphene.String(),
     )
 
     individual_history = OrderedDjangoFilterConnectionField(
@@ -118,7 +118,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
         benefitPlanToEnroll=graphene.String(),
         parent_location=graphene.String(),
         parent_location_level=graphene.Int(),
-        enrollmentCandidateIds=graphene.List(of_type=graphene.String),
+        enrollmentPreviewStatus=graphene.String(),
     )
 
     group_history = OrderedDjangoFilterConnectionField(
@@ -173,6 +173,20 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
         Query._check_permissions(info.context.user,
                                  IndividualConfig.gql_individual_search_perms)
 
+        enrollment_preview_status = kwargs.get("enrollmentPreviewStatus")
+        benefit_plan_to_enroll = kwargs.get("benefitPlanToEnroll")
+        if enrollment_preview_status and benefit_plan_to_enroll:
+            selection = build_individual_enrollment_selection(
+                kwargs.get("customFilters"),
+                benefit_plan_to_enroll,
+                enrollment_preview_status,
+                info.context.user,
+            )
+            return gql_optimizer.query(
+                selection["individuals_not_assigned_to_selected_programme"],
+                info,
+            )
+
         filters = append_validity_filter(**kwargs)
 
         client_mutation_id = kwargs.get("client_mutation_id")
@@ -184,7 +198,6 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
         if group_id:
             filters.append(Q(groupindividuals__group__id=group_id))
 
-        benefit_plan_to_enroll = kwargs.get("benefitPlanToEnroll")
         if benefit_plan_to_enroll:
             filters.append(
                 Q(is_deleted=False) & ~Q(
@@ -199,10 +212,6 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
                     beneficiary__benefit_plan_id=benefit_plan_id
                 )
             )
-
-        enrollment_candidate_ids = kwargs.get("enrollmentCandidateIds")
-        if enrollment_candidate_ids is not None:
-            filters.append(Q(id__in=enrollment_candidate_ids))
 
         filter_not_attached_to_group = kwargs.get("filterNotAttachedToGroup")
         if filter_not_attached_to_group:
@@ -229,17 +238,6 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
                 custom_filters,
                 query,
             )
-
-        if enrollment_candidate_ids:
-            query = query.annotate(
-                _enrollment_candidate_order=Case(
-                    *[
-                        When(id=value, then=position)
-                        for position, value in enumerate(enrollment_candidate_ids)
-                    ],
-                    output_field=IntegerField(),
-                )
-            ).order_by("_enrollment_candidate_order")
 
         return gql_optimizer.query(query, info)
 
@@ -283,10 +281,6 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             will_enrol=selection["will_enrol"],
             enrolment_ranking=selection["ranking"],
             percentage=selection["percentage"],
-            selected_ids=(
-                [str(value) for value in selection["selected_ids"]]
-                if selection["selected_ids"] is not None else None
-            ),
         )
 
     def resolve_individual_history(self, info, **kwargs):
@@ -346,6 +340,20 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             info.context.user,
             IndividualConfig.gql_group_search_perms
         )
+        enrollment_preview_status = kwargs.get("enrollmentPreviewStatus")
+        benefit_plan_to_enroll = kwargs.get("benefitPlanToEnroll")
+        if enrollment_preview_status and benefit_plan_to_enroll:
+            selection = build_group_enrollment_selection(
+                kwargs.get("customFilters"),
+                benefit_plan_to_enroll,
+                enrollment_preview_status,
+                info.context.user,
+            )
+            return gql_optimizer.query(
+                selection["groups_not_assigned_to_selected_programme"],
+                info,
+            )
+
         filters = append_validity_filter(**kwargs)
         client_mutation_id = kwargs.get("client_mutation_id", None)
         if client_mutation_id:
@@ -370,10 +378,6 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
                 )
             )
 
-        enrollment_candidate_ids = kwargs.get("enrollmentCandidateIds")
-        if enrollment_candidate_ids is not None:
-            filters.append(Q(id__in=enrollment_candidate_ids))
-
         parent_location = kwargs.get('parent_location')
         parent_location_level = kwargs.get('parent_location_level')
         if parent_location is not None and parent_location_level is not None:
@@ -390,16 +394,6 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
                 custom_filters,
                 query
             )
-        if enrollment_candidate_ids:
-            query = query.annotate(
-                _enrollment_candidate_order=Case(
-                    *[
-                        When(id=value, then=position)
-                        for position, value in enumerate(enrollment_candidate_ids)
-                    ],
-                    output_field=IntegerField(),
-                )
-            ).order_by("_enrollment_candidate_order")
         return gql_optimizer.query(query, info)
 
     def resolve_group_history(self, info, **kwargs):
@@ -501,10 +495,6 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             will_enrol=selection["will_enrol"],
             enrolment_ranking=selection["ranking"],
             percentage=selection["percentage"],
-            selected_ids=(
-                [str(value) for value in selection["selected_ids"]]
-                if selection["selected_ids"] is not None else None
-            ),
         )
 
     def resolve_global_schema(self, info):
