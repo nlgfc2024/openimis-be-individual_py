@@ -27,8 +27,8 @@ from individual.models import Individual, IndividualDataSource, Group, \
     GroupIndividual, IndividualDataSourceUpload, IndividualDataUploadRecords, GroupDataSource
 from location.apps import LocationConfig
 from individual.services import (
-    build_group_enrollment_queryset,
-    build_individual_enrollment_queryset,
+    build_group_enrollment_selection,
+    build_individual_enrollment_selection,
 )
 
 
@@ -73,6 +73,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
         filterNotAttachedToGroup=graphene.Boolean(),
         parent_location=graphene.String(),
         parent_location_level=graphene.Int(),
+        enrollmentPreviewStatus=graphene.String(),
     )
 
     individual_history = OrderedDjangoFilterConnectionField(
@@ -117,6 +118,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
         benefitPlanToEnroll=graphene.String(),
         parent_location=graphene.String(),
         parent_location_level=graphene.Int(),
+        enrollmentPreviewStatus=graphene.String(),
     )
 
     group_history = OrderedDjangoFilterConnectionField(
@@ -171,6 +173,21 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
         Query._check_permissions(info.context.user,
                                  IndividualConfig.gql_individual_search_perms)
 
+        enrollment_preview_status = kwargs.get("enrollmentPreviewStatus")
+        benefit_plan_to_enroll = kwargs.get("benefitPlanToEnroll")
+        if enrollment_preview_status and benefit_plan_to_enroll:
+            selection = build_individual_enrollment_selection(
+                kwargs.get("customFilters"),
+                benefit_plan_to_enroll,
+                enrollment_preview_status,
+                info.context.user,
+                materialize_selected_ids=False,
+            )
+            return gql_optimizer.query(
+                selection["individuals_not_assigned_to_selected_programme"],
+                info,
+            )
+
         filters = append_validity_filter(**kwargs)
 
         client_mutation_id = kwargs.get("client_mutation_id")
@@ -182,7 +199,6 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
         if group_id:
             filters.append(Q(groupindividuals__group__id=group_id))
 
-        benefit_plan_to_enroll = kwargs.get("benefitPlanToEnroll")
         if benefit_plan_to_enroll:
             filters.append(
                 Q(is_deleted=False) & ~Q(
@@ -232,11 +248,12 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
         custom_filters = kwargs.get("customFilters", None)
         benefit_plan_id = kwargs.get("benefitPlanId")
         status = kwargs.get("status")
-        query = build_individual_enrollment_queryset(
+        selection = build_individual_enrollment_selection(
             custom_filters,
             benefit_plan_id,
             status,
         )
+        query = selection["individual_query_with_filters"]
         # Aggregation for selected individuals
         number_of_selected_individuals = query.count()
 
@@ -259,7 +276,12 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             number_of_individuals_not_assigned_to_programme=individuals_not_assigned_to_programme,
             number_of_individuals_assigned_to_programme=individuals_assigned_to_programme,
             number_of_individuals_assigned_to_selected_programme=individuals_assigned_to_selected_programme,
-            number_of_individuals_to_upload=number_of_individuals_to_upload
+            number_of_individuals_to_upload=selection["will_enrol"],
+            pool_size=selection["pool_size"],
+            cap_applied=selection["cap_applied"],
+            will_enrol=selection["will_enrol"],
+            enrolment_ranking=selection["ranking"],
+            percentage=selection["percentage"],
         )
 
     def resolve_individual_history(self, info, **kwargs):
@@ -319,6 +341,21 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             info.context.user,
             IndividualConfig.gql_group_search_perms
         )
+        enrollment_preview_status = kwargs.get("enrollmentPreviewStatus")
+        benefit_plan_to_enroll = kwargs.get("benefitPlanToEnroll")
+        if enrollment_preview_status and benefit_plan_to_enroll:
+            selection = build_group_enrollment_selection(
+                kwargs.get("customFilters"),
+                benefit_plan_to_enroll,
+                enrollment_preview_status,
+                info.context.user,
+                materialize_selected_ids=False,
+            )
+            return gql_optimizer.query(
+                selection["groups_not_assigned_to_selected_programme"],
+                info,
+            )
+
         filters = append_validity_filter(**kwargs)
         client_mutation_id = kwargs.get("client_mutation_id", None)
         if client_mutation_id:
@@ -426,11 +463,12 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
         custom_filters = kwargs.get("customFilters", None)
         benefit_plan_id = kwargs.get("benefitPlanId")
         status = kwargs.get("status")
-        query = build_group_enrollment_queryset(
+        selection = build_group_enrollment_selection(
             custom_filters,
             benefit_plan_id,
             status,
         )
+        query = selection["group_query_with_filters"]
         # Aggregation for selected groups
         number_of_selected_groups = query.count()
 
@@ -453,7 +491,12 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             number_of_groups_not_assigned_to_programme=groups_not_assigned_to_programme,
             number_of_groups_assigned_to_programme=groups_assigned_to_programme,
             number_of_groups_assigned_to_selected_programme=groups_assigned_to_selected_programme,
-            number_of_groups_to_upload=number_of_groups_to_upload
+            number_of_groups_to_upload=selection["will_enrol"],
+            pool_size=selection["pool_size"],
+            cap_applied=selection["cap_applied"],
+            will_enrol=selection["will_enrol"],
+            enrolment_ranking=selection["ranking"],
+            percentage=selection["percentage"],
         )
 
     def resolve_global_schema(self, info):
