@@ -222,16 +222,18 @@ def rank_and_cap_queryset(
             _cast_error(order_items, exc)
         capped = build_order_by(queryset.filter(id__in=ranked_ids), order_items)
     else:
-        # The preview connection can paginate this ordered, capped query directly.
-        # Avoid materialising the complete cohort and rebuilding a large IN clause
-        # on every page request; confirmation still uses the reusable queryset above.
+        # Keep the LIMIT inside a subquery so the outer queryset remains open to
+        # row-security, GraphQL filters, and client-requested ordering.  This avoids
+        # materialising the complete cohort on every preview page without handing a
+        # sliced queryset to the connection field.
         if any(item.get("cast") for item in order_items) and will_enrol:
             try:
                 list(ranked.values_list("id", flat=True)[:1])
             except DataError as exc:
                 _cast_error(order_items, exc)
         ranked_ids = None
-        capped = ranked[:will_enrol]
+        capped_ids = ranked.values("id")[:will_enrol]
+        capped = build_order_by(queryset.filter(id__in=capped_ids), order_items)
     return capped, {
         "pool_size": pool_size,
         "cap_applied": cap if has_limit else None,

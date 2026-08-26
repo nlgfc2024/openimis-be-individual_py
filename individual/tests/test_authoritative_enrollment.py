@@ -480,7 +480,7 @@ class AuthoritativeEnrollmentTest(TestCase):
         self.assertFalse(selection["individuals_not_assigned_to_selected_programme"].query.is_sliced)
         self.assertEqual(selection["selected_ids"], [ranked.id, second.id])
 
-    def test_preview_caps_the_ordered_query_without_materialising_ids(self):
+    def test_preview_caps_with_filterable_subquery_without_materialising_ids(self):
         benefit_plan = create_benefit_plan(self.user.username, payload_override={
             "type": "INDIVIDUAL",
             "max_beneficiaries": 10,
@@ -507,9 +507,14 @@ class AuthoritativeEnrollmentTest(TestCase):
         )
         preview = selection["individuals_not_assigned_to_selected_programme"]
 
-        self.assertTrue(preview.query.is_sliced)
+        self.assertFalse(preview.query.is_sliced)
         self.assertIsNone(selection["selected_ids"])
         self.assertEqual(list(preview.values_list("id", flat=True)), [first.id, second.id])
+        self.assertEqual(preview.filter(id=first.id).count(), 1)
+        self.assertEqual(
+            list(preview.order_by("-id").values_list("id", flat=True)),
+            [second.id, first.id],
+        )
 
     def test_remaining_status_capacity_limits_cumulative_enrollment(self):
         benefit_plan = create_benefit_plan(self.user.username, payload_override={
