@@ -4,7 +4,7 @@ import graphene_django_optimizer as gql_optimizer
 import pandas as pd
 
 from django.contrib.auth.models import AnonymousUser
-from django.db.models import Q, OuterRef, Subquery
+from django.db.models import Q, OuterRef, Subquery, Exists
 
 from core.custom_filters import CustomFilterWizardStorage
 from core.gql.export_mixin import ExportableQueryMixin
@@ -259,16 +259,27 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
 
         # Aggregation for total number of individuals
         total_number_of_individuals = Individual.objects.filter(is_deleted=False).count()
-        individuals_not_assigned_to_programme = query.\
-            filter(is_deleted=False, beneficiary__benefit_plan_id__isnull=True).count()
+        from social_protection.models import Beneficiary
+        active_assignment = Beneficiary.objects.filter(
+            individual_id=OuterRef("pk"),
+            status=status,
+            is_deleted=False,
+        )
+        active_selected_assignment = active_assignment.filter(
+            benefit_plan_id=benefit_plan_id,
+        )
+        query = query.annotate(
+            _assigned_to_any_plan=Exists(active_assignment),
+            _assigned_to_selected_plan=Exists(active_selected_assignment),
+        )
+        individuals_not_assigned_to_programme = query.filter(
+            _assigned_to_any_plan=False,
+        ).count()
         individuals_assigned_to_programme = number_of_selected_individuals - individuals_not_assigned_to_programme
 
-        individuals_assigned_to_selected_programme = "0"
-        number_of_individuals_to_upload = number_of_selected_individuals
-        if benefit_plan_id:
-            individuals_assigned_to_selected_programme = query. \
-                filter(is_deleted=False, beneficiary__benefit_plan_id=benefit_plan_id).count()
-            number_of_individuals_to_upload = number_of_individuals_to_upload - individuals_assigned_to_selected_programme
+        individuals_assigned_to_selected_programme = query.filter(
+            _assigned_to_selected_plan=True,
+        ).count()
 
         return IndividualSummaryEnrollmentGQLType(
             number_of_selected_individuals=number_of_selected_individuals,
@@ -474,16 +485,27 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
 
         # Aggregation for total number of groups
         total_number_of_groups = Group.objects.filter(is_deleted=False).count()
-        groups_not_assigned_to_programme = query.\
-            filter(is_deleted=False, groupbeneficiary__benefit_plan_id__isnull=True).count()
+        from social_protection.models import GroupBeneficiary
+        active_assignment = GroupBeneficiary.objects.filter(
+            group_id=OuterRef("pk"),
+            status=status,
+            is_deleted=False,
+        )
+        active_selected_assignment = active_assignment.filter(
+            benefit_plan_id=benefit_plan_id,
+        )
+        query = query.annotate(
+            _assigned_to_any_plan=Exists(active_assignment),
+            _assigned_to_selected_plan=Exists(active_selected_assignment),
+        )
+        groups_not_assigned_to_programme = query.filter(
+            _assigned_to_any_plan=False,
+        ).count()
         groups_assigned_to_programme = number_of_selected_groups - groups_not_assigned_to_programme
 
-        groups_assigned_to_selected_programme = "0"
-        number_of_groups_to_upload = number_of_selected_groups
-        if benefit_plan_id:
-            groups_assigned_to_selected_programme = query. \
-                filter(is_deleted=False, groupbeneficiary__benefit_plan_id=benefit_plan_id).count()
-            number_of_groups_to_upload = number_of_groups_to_upload - groups_assigned_to_selected_programme
+        groups_assigned_to_selected_programme = query.filter(
+            _assigned_to_selected_plan=True,
+        ).count()
 
         return GroupSummaryEnrollmentGQLType(
             number_of_selected_groups=number_of_selected_groups,

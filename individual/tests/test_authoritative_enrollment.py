@@ -27,7 +27,7 @@ from individual.custom_filters import GroupCustomFilterWizard, IndividualCustomF
 from individual.tests.test_helpers import create_group, create_individual
 from social_protection.tests.test_helpers import create_benefit_plan
 from social_protection.apps import SocialProtectionConfig
-from social_protection.models import Beneficiary
+from social_protection.models import Beneficiary, GroupBeneficiary
 
 
 class EnrollmentCriterionNormalizationTest(SimpleTestCase):
@@ -577,6 +577,66 @@ class AuthoritativeEnrollmentTest(TestCase):
         self.assertEqual(
             list(selection["groups_not_assigned_to_selected_programme"].values_list("id", flat=True))[:2],
             [first.id, second.id],
+        )
+
+    def test_group_selection_only_excludes_active_assignment_for_requested_status(self):
+        benefit_plan = create_benefit_plan(self.user.username, payload_override={
+            "type": "GROUP",
+        })
+        active = create_group(self.user.username)
+        other_status = create_group(self.user.username)
+        deleted = create_group(self.user.username)
+
+        for group, assignment_status, is_deleted in (
+            (active, "ACTIVE", False),
+            (other_status, "POTENTIAL", False),
+            (deleted, "ACTIVE", True),
+        ):
+            assignment = GroupBeneficiary(
+                group=group,
+                benefit_plan=benefit_plan,
+                status=assignment_status,
+                is_deleted=is_deleted,
+                json_ext={},
+            )
+            assignment.save(username=self.user.username)
+
+        selection = build_group_enrollment_selection(
+            [], str(benefit_plan.id), "ACTIVE", self.user
+        )
+
+        self.assertEqual(selection["pool_size"], 2)
+        self.assertEqual(
+            list(selection["groups_not_assigned_to_selected_programme"]
+                 .order_by("id").values_list("id", flat=True)),
+            sorted([other_status.id, deleted.id]),
+        )
+
+    def test_individual_selection_only_excludes_active_assignment_for_requested_status(self):
+        benefit_plan = self._benefit_plan("INDIVIDUAL")
+        active = create_individual(self.user.username)
+        other_status = create_individual(self.user.username)
+
+        for individual, assignment_status in (
+            (active, "ACTIVE"),
+            (other_status, "POTENTIAL"),
+        ):
+            assignment = Beneficiary(
+                individual=individual,
+                benefit_plan=benefit_plan,
+                status=assignment_status,
+                json_ext={},
+            )
+            assignment.save(username=self.user.username)
+
+        selection = build_individual_enrollment_selection(
+            [], str(benefit_plan.id), "ACTIVE", self.user
+        )
+
+        self.assertEqual(selection["pool_size"], 1)
+        self.assertEqual(
+            list(selection["individuals_not_assigned_to_selected_programme"]),
+            [other_status],
         )
 
     def test_missing_ranking_preserves_uncapped_behavior(self):

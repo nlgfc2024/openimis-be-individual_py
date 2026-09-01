@@ -14,7 +14,7 @@ from core.services import BaseService
 from core.signals import register_service_signal
 from django.apps import apps
 # from django.utils.translation import gettext as _
-from django.db.models import Q, OuterRef, Subquery, Count
+from django.db.models import Q, OuterRef, Subquery, Count, Exists
 from individual.apps import IndividualConfig
 from individual.models import (
     Individual,
@@ -259,9 +259,16 @@ def build_individual_enrollment_selection(
 ):
     benefit_plan = _load_enrollment_benefit_plan(benefit_plan_id, status, "INDIVIDUAL")
     eligible = build_individual_enrollment_queryset(custom_filters, benefit_plan_id, status)
-    assigned = eligible.filter(beneficiary__benefit_plan_id=benefit_plan_id)
-    unassigned = eligible.exclude(id__in=assigned.values_list("id", flat=True))
     from social_protection.models import Beneficiary
+    active_assignment = Beneficiary.objects.filter(
+        individual_id=OuterRef("pk"),
+        benefit_plan_id=benefit_plan_id,
+        status=status,
+        is_deleted=False,
+    )
+    eligible = eligible.annotate(_assigned_to_selected_plan=Exists(active_assignment))
+    assigned = eligible.filter(_assigned_to_selected_plan=True)
+    unassigned = eligible.filter(_assigned_to_selected_plan=False)
     current_count = Beneficiary.objects.filter(
         benefit_plan_id=benefit_plan_id, status=status, is_deleted=False
     ).count()
@@ -292,9 +299,16 @@ def build_group_enrollment_selection(
 ):
     benefit_plan = _load_enrollment_benefit_plan(benefit_plan_id, status, "GROUP")
     eligible = build_group_enrollment_queryset(custom_filters, benefit_plan_id, status)
-    assigned = eligible.filter(groupbeneficiary__benefit_plan_id=benefit_plan_id)
-    unassigned = eligible.exclude(id__in=assigned.values_list("id", flat=True))
     from social_protection.models import GroupBeneficiary
+    active_assignment = GroupBeneficiary.objects.filter(
+        group_id=OuterRef("pk"),
+        benefit_plan_id=benefit_plan_id,
+        status=status,
+        is_deleted=False,
+    )
+    eligible = eligible.annotate(_assigned_to_selected_plan=Exists(active_assignment))
+    assigned = eligible.filter(_assigned_to_selected_plan=True)
+    unassigned = eligible.filter(_assigned_to_selected_plan=False)
     current_count = GroupBeneficiary.objects.filter(
         benefit_plan_id=benefit_plan_id, status=status, is_deleted=False
     ).count()
