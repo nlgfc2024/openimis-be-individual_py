@@ -46,6 +46,8 @@ from workflow.systems.base import WorkflowHandler
 
 logger = logging.getLogger(__name__)
 
+
+
 # Default beneficiary status used for the legacy (bare-list) advanced_criteria format.
 DEFAULT_BENEFICIARY_STATUS = 'POTENTIAL'
 FILTERS_BY_TYPE = {
@@ -66,8 +68,6 @@ def _load_enrollment_benefit_plan(benefit_plan_id, status, expected_type=None):
         raise ValidationError("A BenefitPlan is required for enrollment.")
     if 'social_protection' not in apps.app_configs:
         raise ValidationError("The Social Protection module is required for enrollment.")
-
-    from social_protection.models import BenefitPlan, BeneficiaryStatus
 
     benefit_plan = BenefitPlan.objects.filter(
         id=benefit_plan_id,
@@ -106,11 +106,9 @@ def merge_mandatory_enrolment_criteria(
     )
     _validate_operator_filters(operator_filters, benefit_plan)
 
-    from social_protection.apps import SocialProtectionConfig
-
     configured = SocialProtectionConfig.mandatory_enrollment_criteria or {}
     system_criteria = configured.get(expected_type or benefit_plan.type, {}) or {}
-    from social_protection.enrolment_policy import criteria_for
+    from social_protection.program_policies import runtime_policy_criteria as criteria_for
     runtime_criteria = criteria_for(benefit_plan, status)
 
     json_ext = benefit_plan.json_ext or {}
@@ -262,7 +260,6 @@ def build_individual_enrollment_selection(
 ):
     benefit_plan = _load_enrollment_benefit_plan(benefit_plan_id, status, "INDIVIDUAL")
     eligible = build_individual_enrollment_queryset(custom_filters, benefit_plan_id, status)
-    from social_protection.models import Beneficiary
     active_assignment = Beneficiary.objects.filter(
         individual_id=OuterRef("pk"),
         benefit_plan_id=benefit_plan_id,
@@ -302,7 +299,6 @@ def build_group_enrollment_selection(
 ):
     benefit_plan = _load_enrollment_benefit_plan(benefit_plan_id, status, "GROUP")
     eligible = build_group_enrollment_queryset(custom_filters, benefit_plan_id, status)
-    from social_protection.models import GroupBeneficiary
     active_assignment = GroupBeneficiary.objects.filter(
         group_id=OuterRef("pk"),
         benefit_plan_id=benefit_plan_id,
@@ -524,12 +520,12 @@ class GroupService(
         group.save(user=self.user)
         return group
 
+
     @register_service_signal('group_service.select_groups_to_benefit_plan')
     def select_groups_to_benefit_plan(self, custom_filters, benefit_plan_id, status, user):
         return build_group_enrollment_selection(
             custom_filters, benefit_plan_id, status, user
         )
-
 
 class CreateGroupAndMoveIndividualService(CreateCheckerLogicServiceMixin):
     OBJECT_TYPE = Group
