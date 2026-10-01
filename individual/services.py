@@ -29,7 +29,7 @@ from individual.utils import (
     fetch_summary_of_valid_items,
     fetch_summary_of_broken_items
 )
-from individual.enrolment_ranking import rank_and_cap_queryset
+from social_protection.enrolment_ranking import rank_and_cap_queryset
 from individual.validation import (
     IndividualValidation,
     IndividualDataSourceValidation,
@@ -110,6 +110,8 @@ def merge_mandatory_enrolment_criteria(
 
     configured = SocialProtectionConfig.mandatory_enrollment_criteria or {}
     system_criteria = configured.get(expected_type or benefit_plan.type, {}) or {}
+    from social_protection.enrolment_policy import criteria_for
+    runtime_criteria = criteria_for(benefit_plan, status)
 
     json_ext = benefit_plan.json_ext or {}
     if isinstance(json_ext, str):
@@ -126,6 +128,7 @@ def merge_mandatory_enrolment_criteria(
     seen = set()
     for entry in (
         list(system_criteria.get(status, []) or [])
+        + (runtime_criteria if status == "ACTIVE" else [])
         + list(criteria.get(status, []) or [])
     ):
         condition = _criterion_to_condition(entry)
