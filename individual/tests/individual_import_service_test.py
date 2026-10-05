@@ -200,6 +200,33 @@ class IndividualImportServiceTest(TestCase):
 
     @patch('individual.services.load_dataframe')
     @patch('individual.services.fetch_summary_of_broken_items')
+    @patch('individual.services.LocationManager.get_allowed_ids')
+    def test_validate_import_individuals_superuser_allows_resolved_locations(
+        self,
+        mock_get_allowed_ids,
+        mock_fetch_summary,
+        mock_load_dataframe,
+    ):
+        dataframe = pd.DataFrame({
+            'id': [1],
+            'location_name': [self.village_a.name],
+            'location_code': [self.village_a.code],
+        })
+        mock_load_dataframe.return_value = dataframe
+        mock_fetch_summary.return_value = {"invalid_items_count": 0}
+
+        result = IndividualImportService(self.admin_user).validate_import_individuals(
+            uuid.uuid4(),
+            MagicMock(),
+        )
+
+        mock_get_allowed_ids.assert_not_called()
+        self.assertTrue(
+            result['data'][0]['validations']['location_name']['success']
+        )
+
+    @patch('individual.services.load_dataframe')
+    @patch('individual.services.fetch_summary_of_broken_items')
     def test_validate_import_individuals_row_level_security(self, mock_fetch_summary, mock_load_dataframe):
         # set up a user assigned the district village_a is in
         sp_role = create_sp_role(self.admin_user)
