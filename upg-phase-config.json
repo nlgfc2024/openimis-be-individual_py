@@ -1,0 +1,18 @@
+{
+  "advanced_criteria": {
+    "POTENTIAL": [],
+    "ACTIVE": [],
+    "SUSPENDED": [],
+    "GRADUATED": []
+  },
+  "upg_head_gender_options": ["FEMALE", "MALE", "BOTH"],
+  "upg_criteria": {
+    "previous_programme": "SCTP",
+    "enrollment_status": "ACTIVE",
+    "participant_status": "YES",
+    "member_min_age": 18,
+    "member_max_age": 64,
+    "requires_livelihood_activity": true,
+    "validation_statuses": ["VERIFIED", "NOT_VERIFIED"]
+  }
+}

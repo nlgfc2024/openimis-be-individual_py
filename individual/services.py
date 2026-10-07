@@ -68,7 +68,7 @@ FILTERS_BY_TYPE = {
 
 PROGRAMME_CRITERIA_PREFIX = "programme_criteria__"
 SUPPORTED_PROGRAMME_CRITERIA = {
-    "UPG": {"preferred_head_gender"},
+    "UPG": {"preferred_head_gender", "female_percentage", "male_percentage"},
     "RMEP": {"business_period_years", "business_period_months"},
 }
 
@@ -249,6 +249,21 @@ def _split_programme_criteria(custom_filters, benefit_plan):
         except (TypeError, ValueError, json.JSONDecodeError):
             raise ValidationError(f"Invalid value for programme enrollment criterion {field}.")
         programme_criteria[field] = value
+    if programme_code == "UPG":
+        from social_protection.upg_options import upg_gender_options
+        gender = programme_criteria.get("preferred_head_gender")
+        if gender is not None and gender not in upg_gender_options(benefit_plan):
+            raise ValidationError("Selected head gender is not enabled for this phase.")
+        if gender == "BOTH":
+            female = programme_criteria.get("female_percentage")
+            male = programme_criteria.get("male_percentage")
+            if (type(female) is not int or type(male) is not int
+                    or not 0 <= female <= 100 or not 0 <= male <= 100 or female + male != 100):
+                raise ValidationError("Female and male percentages must total 100.")
+            if benefit_plan.max_beneficiaries is None:
+                raise ValidationError("Set the phase maximum beneficiaries before using Both genders.")
+        elif "female_percentage" in programme_criteria or "male_percentage" in programme_criteria:
+            raise ValidationError("Percentages are only allowed with Both genders.")
     return regular_filters, programme_criteria
 
 
@@ -290,16 +305,29 @@ def _sctp_participant_q(prefix):
     })
 
 
-def _apply_upg_criteria(query, programme_criteria):
+def _apply_upg_criteria(query, programme_criteria, benefit_plan):
+    from social_protection.upg_criteria import upg_criteria
+    rules = upg_criteria(benefit_plan)
     today = date.today()
-    earliest_dob, latest_dob = _age_range_dob(today, 18, 64)
-    query = query.filter(
-        _sctp_participant_q("groupbeneficiary__")
-    ).filter(
-        groupindividuals__is_deleted=False,
-        groupindividuals__individual__is_deleted=False,
-        groupindividuals__individual__dob__range=(earliest_dob, latest_dob),
+    earliest_dob, latest_dob = _age_range_dob(today, rules['member_min_age'], rules['member_max_age'])
+    programme = rules['previous_programme']
+    previous = (Q(groupbeneficiary__benefit_plan__code__iexact=programme)
+                | Q(groupbeneficiary__benefit_plan__name__iexact=programme)
+                | Q(groupbeneficiary__benefit_plan__name__icontains=programme))
+    previous &= Q(groupbeneficiary__is_deleted=False)
+    if rules['enrollment_status'] is not None:
+        previous &= Q(groupbeneficiary__status=rules['enrollment_status'])
+    if rules['participant_status'] is not None:
+        previous &= Q(groupbeneficiary__json_ext__participant_status__iexact=rules['participant_status'])
+    member = GroupIndividual.objects.filter(
+        group_id=OuterRef('pk'), is_deleted=False, individual__is_deleted=False,
+        individual__dob__range=(earliest_dob, latest_dob),
     )
+    if rules['requires_livelihood_activity']:
+        member = member.filter(individual__json_ext__livelihood_activity__in=[True, 'Yes', 'YES'])
+    query = query.filter(previous).annotate(_upg_member=Exists(member)).filter(_upg_member=True)
+    if rules['validation_statuses']:
+        query = query.filter(json_ext__validation_status__in=rules['validation_statuses'])
 
     preferred_gender = programme_criteria.get("preferred_head_gender")
     if not preferred_gender:
@@ -307,9 +335,10 @@ def _apply_upg_criteria(query, programme_criteria):
     aliases = {
         "FEMALE": ("FEMALE", "F"),
         "MALE": ("MALE", "M"),
+        "BOTH": ("FEMALE", "F", "MALE", "M"),
     }.get(preferred_gender.upper())
     if not aliases:
-        raise ValidationError("Preferred household head gender must be MALE or FEMALE.")
+        raise ValidationError("Preferred household head gender must be MALE, FEMALE or BOTH.")
     gender_query = Q()
     for alias in aliases:
         gender_query |= Q(
@@ -319,6 +348,7 @@ def _apply_upg_criteria(query, programme_criteria):
         Q(groupindividuals__role=GroupIndividual.Role.HEAD),
         gender_query,
         groupindividuals__is_deleted=False,
+        groupindividuals__individual__is_deleted=False,
     )
     return query
 
@@ -433,7 +463,7 @@ def build_group_enrollment_queryset(custom_filters, benefit_plan_id, status):
         query,
     )
     if _programme_code(benefit_plan) == "UPG":
-        query = _apply_upg_criteria(query, programme_criteria)
+        query = _apply_upg_criteria(query, programme_criteria, benefit_plan)
     elif _programme_code(benefit_plan) == "RMEP":
         query = _apply_rmep_criteria(query, programme_criteria)
     return query.distinct()
@@ -501,13 +531,18 @@ def build_group_enrollment_selection(
     current_count = GroupBeneficiary.objects.filter(
         benefit_plan_id=benefit_plan_id, status=status, is_deleted=False
     ).count()
-    selected, metadata = rank_and_cap_queryset(
-        unassigned,
-        benefit_plan,
-        status,
-        current_count,
-        materialize_selected_ids=materialize_selected_ids,
-    )
+    _, programme_criteria = _split_programme_criteria(custom_filters, benefit_plan)
+    if _programme_code(benefit_plan) == "UPG" and programme_criteria.get("preferred_head_gender") == "BOTH":
+        from individual.gender_quota import apply_gender_quota
+        selected, metadata = apply_gender_quota(
+            unassigned, benefit_plan, status, current_count, programme_criteria,
+            materialize=materialize_selected_ids,
+        )
+    else:
+        selected, metadata = rank_and_cap_queryset(
+            unassigned, benefit_plan, status, current_count,
+            materialize_selected_ids=materialize_selected_ids,
+        )
     return {
         "groups_assigned_to_selected_programme": assigned,
         "groups_not_assigned_to_selected_programme": selected,
