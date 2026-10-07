@@ -1,4 +1,5 @@
 import copy
+from datetime import date
 from unittest.mock import MagicMock, Mock, patch
 
 from django.core.exceptions import ValidationError
@@ -24,7 +25,7 @@ from individual.enrolment_ranking import (
 from individual.models import Individual
 from individual.schema import Query
 from individual.custom_filters import GroupCustomFilterWizard, IndividualCustomFilterWizard
-from individual.tests.test_helpers import create_group, create_individual
+from individual.tests.test_helpers import add_individual_to_group, create_group, create_individual
 from social_protection.tests.test_helpers import create_benefit_plan
 from social_protection.apps import SocialProtectionConfig
 from social_protection.models import Beneficiary, GroupBeneficiary
@@ -428,6 +429,90 @@ class AuthoritativeEnrollmentTest(TestCase):
             status="POTENTIAL",
         )
         self.assertFalse(attempted_replacement.exists())
+
+    def test_upg_requires_active_sctp_household_working_age_member_and_head_gender(self):
+        sctp = create_benefit_plan(self.user.username, payload_override={
+            "code": "SCTP", "name": "SCTP", "type": "GROUP",
+            "beneficiary_data_schema": {"properties": {}},
+            "json_ext": {"advanced_criteria": {"POTENTIAL": []}},
+        })
+        upg = create_benefit_plan(self.user.username, payload_override={
+            "code": "UPG", "name": "UPG", "type": "GROUP",
+            "beneficiary_data_schema": {"properties": {}},
+            "json_ext": {"advanced_criteria": {"POTENTIAL": []}},
+        })
+        eligible = create_group(self.user.username)
+        female_head = create_individual(self.user.username, {
+            "dob": date(date.today().year - 40, 1, 1),
+            "json_ext": {"gender": "F"},
+        })
+        add_individual_to_group(self.user.username, female_head, eligible)
+        assignment = GroupBeneficiary(
+            group=eligible, benefit_plan=sctp, status="ACTIVE",
+        )
+        assignment.save(username=self.user.username)
+
+        no_sctp = create_group(self.user.username)
+        other_head = create_individual(self.user.username, {
+            "dob": date(date.today().year - 35, 1, 1),
+            "json_ext": {"gender": "FEMALE"},
+        })
+        add_individual_to_group(self.user.username, other_head, no_sctp)
+
+        result = build_group_enrollment_queryset(
+            ['programme_criteria__preferred_head_gender__string="FEMALE"'],
+            str(upg.id),
+            "POTENTIAL",
+        )
+
+        self.assertEqual(set(result.values_list("id", flat=True)), {eligible.id})
+
+    def test_rmep_accepts_pwp_household_with_eligible_business_member(self):
+        pwp = create_benefit_plan(self.user.username, payload_override={
+            "code": "PWP", "name": "PWP", "type": "GROUP",
+            "beneficiary_data_schema": {"properties": {}},
+            "json_ext": {"advanced_criteria": {"POTENTIAL": []}},
+        })
+        rmep = create_benefit_plan(self.user.username, payload_override={
+            "code": "RMEP", "name": "RMEP", "type": "GROUP",
+            "beneficiary_data_schema": {"properties": {}},
+            "json_ext": {"advanced_criteria": {"POTENTIAL": []}},
+        })
+        pwp_household = create_group(self.user.username)
+        eligible = create_individual(self.user.username, {
+            "dob": date(date.today().year - 30, 1, 1),
+            "json_ext": {
+                "has_business": True,
+                "business_period_years": 2,
+                "business_period_months": 3,
+            },
+        })
+        add_individual_to_group(self.user.username, eligible, pwp_household)
+        assignment = GroupBeneficiary(
+            group=pwp_household, benefit_plan=pwp, status="ACTIVE",
+        )
+        assignment.save(username=self.user.username)
+
+        result = build_group_enrollment_queryset(
+            [
+                "programme_criteria__business_period_years__integer=1",
+                "programme_criteria__business_period_months__integer=6",
+            ],
+            str(rmep.id),
+            "POTENTIAL",
+        )
+
+        self.assertEqual(set(result.values_list("id", flat=True)), {pwp_household.id})
+
+    def test_programme_criterion_cannot_be_sent_to_an_unrelated_plan(self):
+        plan = self._benefit_plan("GROUP")
+
+        with self.assertRaisesMessage(ValidationError, "is not allowed"):
+            build_group_enrollment_queryset(
+                ['programme_criteria__preferred_head_gender__string="FEMALE"'],
+                str(plan.id),
+                "ACTIVE",
+            )
 
     def test_rejects_benefit_plan_type_mismatch(self):
         group_plan = self._benefit_plan("GROUP")

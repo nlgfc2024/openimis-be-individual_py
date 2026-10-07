@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "programmes": {
+    "UPG": {
+      "benefit_plan_type": "GROUP",
+      "enrollment_entity": "HOUSEHOLD",
+      "required_previous_programme": {
+        "code_or_name": "SCTP",
+        "participant_status_field": "participant_status",
+        "participant_status_value": "YES",
+        "participant_status_source": "group_beneficiary.json_ext"
+      },
+      "household_membership": {
+        "relationship_field": "relationship",
+        "stored_field": "role",
+        "head_value": "HEAD"
+      },
+      "household_member_age": {
+        "minimum": 18,
+        "maximum": 64
+      },
+      "preferred_household_head_gender": {
+        "required": true,
+        "field": "gender",
+        "options": [
+          "FEMALE",
+          "MALE"
+        ],
+        "accepted_stored_values": {
+          "FEMALE": [
+            "FEMALE",
+            "F"
+          ],
+          "MALE": [
+            "MALE",
+            "M"
+          ]
+        }
+      }
+    },
+    "RMEP": {
+      "benefit_plan_type": "GROUP",
+      "enrollment_entity": "HOUSEHOLD",
+      "required_previous_programme": {
+        "code_or_name": "PWP",
+        "status": "ACTIVE"
+      },
+      "qualifying_household_member": {
+        "required": true,
+        "age": {
+          "minimum": 18,
+          "maximum": 55
+        },
+        "business": {
+          "required": true,
+          "has_business_field": "has_business",
+          "has_business_value": true,
+          "period_years_field": "business_period_years",
+          "period_months_field": "business_period_months",
+          "period_months_minimum": 0,
+          "period_months_maximum": 11
+        }
+      }
+    }
+  },
+  "individual_json_schema_properties": {
+    "gender": {
+      "type": "string",
+      "enum": [
+        "FEMALE",
+        "MALE",
+        "F",
+        "M"
+      ]
+    },
+    "has_business": {
+      "type": "boolean"
+    },
+    "business_period_years": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "business_period_months": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 11
+    }
+  }
+}

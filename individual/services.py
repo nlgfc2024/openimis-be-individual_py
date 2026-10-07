@@ -1,6 +1,8 @@
 import logging
 import json
+import re
 import uuid
+from datetime import date, timedelta
 import pandas as pd
 from pandas import DataFrame
 from django.core.files.uploadedfile import InMemoryUploadedFile
@@ -14,7 +16,11 @@ from core.services import BaseService
 from core.signals import register_service_signal
 from django.apps import apps
 # from django.utils.translation import gettext as _
-from django.db.models import Q, OuterRef, Subquery, Count, Exists
+from django.db.models import (
+    Q, OuterRef, Subquery, Count, Exists, F, IntegerField, Value,
+)
+from django.db.models.functions import Cast, Coalesce
+from django.db.models.fields.json import KeyTextTransform
 from individual.apps import IndividualConfig
 from individual.models import (
     Individual,
@@ -58,6 +64,12 @@ FILTERS_BY_TYPE = {
     "numeric": {"exact", "lt", "lte", "gt", "gte"},
     "date": {"exact", "lt", "lte", "gt", "gte"},
     "boolean": {"exact"},
+}
+
+PROGRAMME_CRITERIA_PREFIX = "programme_criteria__"
+SUPPORTED_PROGRAMME_CRITERIA = {
+    "UPG": {"preferred_head_gender"},
+    "RMEP": {"business_period_years", "business_period_months"},
 }
 
 
@@ -193,6 +205,170 @@ def _validate_operator_filters(custom_filters, benefit_plan):
             )
 
 
+def _programme_code(benefit_plan):
+    identity = " ".join((benefit_plan.code or "", benefit_plan.name or "")).upper()
+    for code in SUPPORTED_PROGRAMME_CRITERIA:
+        if re.search(rf"\b{re.escape(code)}\b", identity):
+            return code
+    return (benefit_plan.code or "").strip().upper()
+
+
+def _split_programme_criteria(custom_filters, benefit_plan):
+    """Separate relation-aware programme inputs from ordinary JSON filters."""
+    programme_code = _programme_code(benefit_plan)
+    allowed = SUPPORTED_PROGRAMME_CRITERIA.get(programme_code, set())
+    regular_filters = []
+    programme_criteria = {}
+
+    for condition in custom_filters or []:
+        if not isinstance(condition, str) or not condition.startswith(PROGRAMME_CRITERIA_PREFIX):
+            regular_filters.append(condition)
+            continue
+        if "=" not in condition:
+            raise ValidationError("Malformed programme enrollment criterion.")
+        expression, raw_value = condition.split("=", 1)
+        parts = expression.split("__")
+        if len(parts) != 3 or parts[0] != "programme_criteria":
+            raise ValidationError("Malformed programme enrollment criterion.")
+        field, value_type = parts[1:]
+        if field not in allowed:
+            raise ValidationError(
+                f"Programme enrollment criterion {field} is not allowed for {programme_code}."
+            )
+        try:
+            if value_type == "integer":
+                value = int(raw_value)
+                if value < 0:
+                    raise ValueError
+            elif value_type == "string":
+                value = json.loads(raw_value)
+                if not isinstance(value, str):
+                    raise ValueError
+            else:
+                raise ValueError
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raise ValidationError(f"Invalid value for programme enrollment criterion {field}.")
+        programme_criteria[field] = value
+    return regular_filters, programme_criteria
+
+
+def _years_ago_boundary(today, years):
+    """Return the same calendar day N years ago, handling 29 February."""
+    try:
+        return today.replace(year=today.year - years)
+    except ValueError:
+        return today.replace(year=today.year - years, day=28)
+
+
+def _age_range_dob(today, minimum_age, maximum_age):
+    latest = _years_ago_boundary(today, minimum_age)
+    earliest = _years_ago_boundary(today, maximum_age + 1) + timedelta(days=1)
+    return earliest, latest
+
+
+def _active_programme_q(prefix, code):
+    identity = (
+        Q(**{f"{prefix}benefit_plan__code__iexact": code})
+        | Q(**{f"{prefix}benefit_plan__name__iexact": code})
+        | Q(**{f"{prefix}benefit_plan__name__icontains": code})
+    )
+    return identity & Q(**{
+        f"{prefix}status": "ACTIVE",
+        f"{prefix}is_deleted": False,
+    })
+
+
+def _sctp_participant_q(prefix):
+    identity = (
+        Q(**{f"{prefix}benefit_plan__code__iexact": "SCTP"})
+        | Q(**{f"{prefix}benefit_plan__name__iexact": "SCTP"})
+        | Q(**{f"{prefix}benefit_plan__name__icontains": "SCTP"})
+    )
+    return identity & Q(**{
+        f"{prefix}is_deleted": False,
+        f"{prefix}json_ext__participant_status__iexact": "YES",
+    })
+
+
+def _apply_upg_criteria(query, programme_criteria):
+    today = date.today()
+    earliest_dob, latest_dob = _age_range_dob(today, 18, 64)
+    query = query.filter(
+        _sctp_participant_q("groupbeneficiary__")
+    ).filter(
+        groupindividuals__is_deleted=False,
+        groupindividuals__individual__is_deleted=False,
+        groupindividuals__individual__dob__range=(earliest_dob, latest_dob),
+    )
+
+    preferred_gender = programme_criteria.get("preferred_head_gender")
+    if not preferred_gender:
+        raise ValidationError("Preferred household head gender is required for UPG enrollment.")
+    aliases = {
+        "FEMALE": ("FEMALE", "F"),
+        "MALE": ("MALE", "M"),
+    }.get(preferred_gender.upper())
+    if not aliases:
+        raise ValidationError("Preferred household head gender must be MALE or FEMALE.")
+    gender_query = Q()
+    for alias in aliases:
+        gender_query |= Q(
+            groupindividuals__individual__json_ext__gender__iexact=alias
+        )
+    query = query.filter(
+        Q(groupindividuals__role=GroupIndividual.Role.HEAD),
+        gender_query,
+        groupindividuals__is_deleted=False,
+    )
+    return query
+
+
+def _apply_rmep_criteria(query, programme_criteria):
+    duration_fields = {"business_period_years", "business_period_months"}
+    if not duration_fields.issubset(programme_criteria):
+        raise ValidationError("Business period in years and months is required for RMEP enrollment.")
+    years = programme_criteria["business_period_years"]
+    months = programme_criteria["business_period_months"]
+    if months > 11:
+        raise ValidationError("Business period months must be between 0 and 11.")
+    minimum_months = years * 12 + months
+
+    today = date.today()
+    earliest_dob, latest_dob = _age_range_dob(today, 18, 55)
+    qualifying_member = GroupIndividual.objects.filter(
+        group_id=OuterRef("pk"),
+        is_deleted=False,
+        individual__is_deleted=False,
+        individual__dob__range=(earliest_dob, latest_dob),
+        individual__json_ext__has_business=True,
+        individual__json_ext__has_keys=[
+            "business_period_years", "business_period_months",
+        ],
+    ).annotate(
+        _business_years=Coalesce(
+            Cast(
+                KeyTextTransform("business_period_years", "individual__json_ext"),
+                IntegerField(),
+            ),
+            Value(0),
+        ),
+        _business_months=Coalesce(
+            Cast(
+                KeyTextTransform("business_period_months", "individual__json_ext"),
+                IntegerField(),
+            ),
+            Value(0),
+        ),
+    ).annotate(
+        _business_period_total_months=F("_business_years") * 12 + F("_business_months")
+    ).filter(_business_period_total_months__gte=minimum_months)
+
+    return query.filter(
+        _active_programme_q("groupbeneficiary__", "PWP"),
+        Exists(qualifying_member),
+    )
+
+
 def _criterion_to_condition(entry):
     """Build the ``field__filter__type=value`` custom-filter string for a stored
     advanced-criteria entry. Handles both stored shapes: the eligibility-panel shape
@@ -215,8 +391,12 @@ def _criterion_to_condition(entry):
 
 
 def build_individual_enrollment_queryset(custom_filters, benefit_plan_id, status):
+    benefit_plan = _load_enrollment_benefit_plan(benefit_plan_id, status, "INDIVIDUAL")
+    operator_filters, programme_criteria = _split_programme_criteria(
+        custom_filters, benefit_plan,
+    )
     filters = merge_mandatory_enrolment_criteria(
-        custom_filters,
+        operator_filters,
         benefit_plan_id,
         status,
         "INDIVIDUAL",
@@ -235,19 +415,28 @@ def build_individual_enrollment_queryset(custom_filters, benefit_plan_id, status
 
 
 def build_group_enrollment_queryset(custom_filters, benefit_plan_id, status):
+    benefit_plan = _load_enrollment_benefit_plan(benefit_plan_id, status, "GROUP")
+    operator_filters, programme_criteria = _split_programme_criteria(
+        custom_filters, benefit_plan,
+    )
     filters = merge_mandatory_enrolment_criteria(
-        custom_filters,
+        operator_filters,
         benefit_plan_id,
         status,
         "GROUP",
     )
     query = Group.objects.filter(is_deleted=False)
-    return CustomFilterWizardStorage.build_custom_filters_queryset(
+    query = CustomFilterWizardStorage.build_custom_filters_queryset(
         "individual",
         "Group",
         filters,
         query,
-    ).distinct()
+    )
+    if _programme_code(benefit_plan) == "UPG":
+        query = _apply_upg_criteria(query, programme_criteria)
+    elif _programme_code(benefit_plan) == "RMEP":
+        query = _apply_rmep_criteria(query, programme_criteria)
+    return query.distinct()
 
 
 def build_individual_enrollment_selection(
