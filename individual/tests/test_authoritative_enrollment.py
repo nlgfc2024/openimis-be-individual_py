@@ -24,7 +24,11 @@ from individual.enrolment_ranking import (
 from individual.models import Individual
 from individual.schema import Query
 from individual.custom_filters import GroupCustomFilterWizard, IndividualCustomFilterWizard
-from individual.tests.test_helpers import create_group, create_individual
+from individual.tests.test_helpers import (
+    add_individual_to_group,
+    create_group,
+    create_individual,
+)
 from social_protection.tests.test_helpers import create_benefit_plan
 from social_protection.apps import SocialProtectionConfig
 from social_protection.models import Beneficiary, GroupBeneficiary
@@ -113,6 +117,49 @@ class EnrollmentCriterionNormalizationTest(SimpleTestCase):
             Individual,
         )
         self.assertEqual([item["field"] for item in order_items], ["last_name", "id"])
+
+    def test_weighted_ranking_validation_accepts_primary_worker_source(self):
+        from individual.models import Group
+
+        order_items, percentage, respect_max = validate_ranking_spec({
+            "score_source": {
+                "type": "PRIMARY_WORKER",
+                "data_field": "individual.json_ext",
+            },
+            "weighted_score": {
+                "normalise_to": 100,
+                "components": [{
+                    "field": "business_experience",
+                    "weight": 100,
+                    "scoring": {
+                        "type": "mapping",
+                        "values": {"Yes": 1},
+                        "default": 0,
+                    },
+                }],
+            },
+            "order_by": [{"field": "_weighted_score", "direction": "desc"}],
+        }, Group)
+
+        self.assertEqual(order_items[0]["field"], "_weighted_score")
+        self.assertIsNone(percentage)
+        self.assertTrue(respect_max)
+
+    def test_weighted_ranking_validation_requires_score_in_ordering(self):
+        with self.assertRaisesMessage(ValidationError, "must include _weighted_score"):
+            validate_ranking_spec({
+                "weighted_score": {
+                    "components": [{
+                        "field": "business_period",
+                        "weight": 100,
+                        "scoring": {
+                            "type": "numeric_bands",
+                            "bands": [{"min": 0, "points": 1}],
+                        },
+                    }],
+                },
+                "order_by": ["id"],
+            }, Individual)
 
     def test_string_json_ext_snapshot_uses_status_then_wildcard(self):
         plan = Mock(json_ext='{"enrolment_ranking":{"*":{"order_by":["id"]},"ACTIVE":{"order_by":["-id"]}}}')
@@ -577,6 +624,96 @@ class AuthoritativeEnrollmentTest(TestCase):
         self.assertEqual(
             list(selection["groups_not_assigned_to_selected_programme"].values_list("id", flat=True))[:2],
             [first.id, second.id],
+        )
+
+    def test_group_weighted_ranking_reads_primary_worker_business_data(self):
+        benefit_plan = create_benefit_plan(self.user.username, payload_override={
+            "type": "GROUP",
+            "beneficiary_data_schema": {
+                "properties": {
+                    "type_of_business": {"type": "string"},
+                    "business_period": {"type": "number"},
+                }
+            },
+            "json_ext": {
+                "enrolment_ranking": {
+                    "ACTIVE": {
+                        "score_source": {
+                            "type": "PRIMARY_WORKER",
+                            "data_field": "individual.json_ext",
+                        },
+                        "weighted_score": {
+                            "normalise_to": 100,
+                            "components": [
+                                {
+                                    "field": "type_of_business",
+                                    "weight": 50,
+                                    "scoring": {
+                                        "type": "mapping",
+                                        "values": {"Priority": 10, "Other": 6},
+                                        "default": 0,
+                                        "maximum_points": 10,
+                                    },
+                                },
+                                {
+                                    "field": "business_period",
+                                    "weight": 50,
+                                    "scoring": {
+                                        "type": "numeric_bands",
+                                        "bands": [
+                                            {"min": 0, "max": 2.99, "points": 2},
+                                            {"min": 3, "points": 10},
+                                        ],
+                                        "default": 0,
+                                        "maximum_points": 10,
+                                    },
+                                },
+                            ],
+                        },
+                        "order_by": [{
+                            "field": "_weighted_score",
+                            "direction": "desc",
+                        }],
+                        "tie_breaker": "id",
+                        "limit": {"percentage": 50},
+                    }
+                }
+            },
+        })
+
+        def household(business_type, business_period):
+            group = create_group(self.user.username)
+            member = create_individual(self.user.username, {
+                "json_ext": {
+                    "type_of_business": business_type,
+                    "business_period": business_period,
+                }
+            })
+            membership = add_individual_to_group(
+                self.user.username,
+                member,
+                group,
+            )
+            membership.json_ext = {"primary_worker": True}
+            membership.save(username=self.user.username)
+            return group
+
+        highest = household("Priority", 5)
+        second = household("Other", 4)
+        household("Other", 1)
+
+        selection = build_group_enrollment_selection(
+            [], str(benefit_plan.id), "ACTIVE", self.user
+        )
+
+        self.assertEqual(selection["pool_size"], 3)
+        self.assertEqual(selection["will_enrol"], 2)
+        self.assertEqual(
+            list(
+                selection["groups_not_assigned_to_selected_programme"]
+                .values_list("id", flat=True)
+            ),
+            [highest.id, second.id],
         )
 
     def test_group_selection_only_excludes_active_assignment_for_requested_status(self):
