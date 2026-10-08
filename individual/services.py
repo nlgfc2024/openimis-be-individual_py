@@ -45,8 +45,6 @@ from workflow.systems.base import WorkflowHandler
 
 logger = logging.getLogger(__name__)
 
-
-
 # Default beneficiary status used for the legacy (bare-list) advanced_criteria format.
 DEFAULT_BENEFICIARY_STATUS = 'POTENTIAL'
 FILTERS_BY_TYPE = {
@@ -108,13 +106,9 @@ def merge_mandatory_enrolment_criteria(
     _validate_operator_filters(operator_filters, benefit_plan)
 
     from social_protection.apps import SocialProtectionConfig
-    from social_protection.program_policies import (
-        runtime_policy_criteria as criteria_for,
-    )
 
     configured = SocialProtectionConfig.mandatory_enrollment_criteria or {}
     system_criteria = configured.get(expected_type or benefit_plan.type, {}) or {}
-    runtime_criteria = criteria_for(benefit_plan, status)
 
     json_ext = benefit_plan.json_ext or {}
     if isinstance(json_ext, str):
@@ -131,7 +125,6 @@ def merge_mandatory_enrolment_criteria(
     seen = set()
     for entry in (
         list(system_criteria.get(status, []) or [])
-        + (runtime_criteria if status == "ACTIVE" else [])
         + list(criteria.get(status, []) or [])
     ):
         condition = _criterion_to_condition(entry)
@@ -900,10 +893,7 @@ class IndividualImportService:
         if check_location:
             # Issue a single DB query instead of per row for efficiency
             loc_name_code_district_ids_from_db = self._query_location_district_ids(dataframe)
-            if self.user.is_superuser:
-                user_allowed_loc_ids = set(loc_name_code_district_ids_from_db.values())
-            else:
-                user_allowed_loc_ids = LocationManager().get_allowed_ids(self.user)
+            user_allowed_loc_ids = LocationManager().get_allowed_ids(self.user)
             duplicate_village_name_code_tuples = self._query_duplicate_village_name_code()
         else:
             loc_name_code_district_ids_from_db = None
