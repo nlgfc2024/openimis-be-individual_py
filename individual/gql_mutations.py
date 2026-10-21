@@ -73,12 +73,6 @@ class UpdateGroupIndividualInputType(CreateGroupIndividualInputType):
     id = graphene.UUID(required=True)
 
 
-class ConfirmIndividualEnrollmentInputType(OpenIMISMutation.Input):
-    custom_filters = graphene.List(required=False, of_type=graphene.String)
-    benefit_plan_id = graphene.String(required=True, max_lenght=255)
-    status = graphene.String(required=True, max_lenght=255)
-
-
 class CreateIndividualMutation(BaseHistoryModelCreateMutationMixin, BaseMutation):
     _mutation_class = "CreateIndividualMutation"
     _mutation_module = "individual"
@@ -552,71 +546,3 @@ class CreateGroupAndMoveIndividualMutation(BaseHistoryModelCreateMutationMixin, 
 
     class Input(CreateGroupInputType):
         group_individual_id = graphene.UUID(required=True)
-
-
-class ConfirmIndividualEnrollmentMutation(BaseHistoryModelCreateMutationMixin, BaseMutation):
-    _mutation_class = "ConfirmIndividualEnrollmentMutation"
-    _mutation_module = "individual"
-    _model = Individual
-
-    @classmethod
-    def _validate_mutation(cls, user, **data):
-        super()._validate_mutation(user, **data)
-        if not user.has_perms(
-                IndividualConfig.gql_group_create_perms):
-            raise PermissionDenied(_("unauthorized"))
-
-    @classmethod
-    def _mutate(cls, user, **data):
-        if "client_mutation_id" in data:
-            data.pop('client_mutation_id')
-        if "client_mutation_label" in data:
-            data.pop('client_mutation_label')
-        custom_filters = data.pop('custom_filters', None)
-        benefit_plan_id = data.pop('benefit_plan_id', None)
-        status = data.pop('status', "ACTIVE")
-        service = IndividualService(user)
-        service.select_individuals_to_benefit_plan(
-            custom_filters,
-            benefit_plan_id,
-            status,
-            user,
-        )
-        return None
-
-    class Input(ConfirmIndividualEnrollmentInputType):
-        pass
-
-
-class ConfirmGroupEnrollmentMutation(BaseHistoryModelCreateMutationMixin, BaseMutation):
-    _mutation_class = "ConfirmGroupEnrollmentMutation"
-    _mutation_module = "individual"
-    _model = Group
-
-    @classmethod
-    def _validate_mutation(cls, user, **data):
-        super()._validate_mutation(user, **data)
-        if not user.has_perms(
-                IndividualConfig.gql_group_create_perms):
-            raise PermissionDenied(_("unauthorized"))
-
-    @classmethod
-    def _mutate(cls, user, **data):
-        if "client_mutation_id" in data:
-            data.pop('client_mutation_id')
-        if "client_mutation_label" in data:
-            data.pop('client_mutation_label')
-        custom_filters = data.pop('custom_filters', None)
-        benefit_plan_id = data.pop('benefit_plan_id', None)
-        status = data.pop('status', "ACTIVE")
-        service = GroupService(user)
-        service.select_groups_to_benefit_plan(
-            custom_filters,
-            benefit_plan_id,
-            status,
-            user,
-        )
-        return None
-
-    class Input(ConfirmIndividualEnrollmentInputType):
-        pass

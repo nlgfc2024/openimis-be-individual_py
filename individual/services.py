@@ -5,16 +5,14 @@ import pandas as pd
 from pandas import DataFrame
 from django.core.files.uploadedfile import InMemoryUploadedFile
 from django.db import transaction
-from django.core.exceptions import ValidationError
 
 from calculation.services import get_calculation_object
-from core.custom_filters import CustomFilterWizardStorage
 from core.models import User
 from core.services import BaseService
 from core.signals import register_service_signal
 from django.apps import apps
 # from django.utils.translation import gettext as _
-from django.db.models import Q, OuterRef, Subquery, Count, Exists
+from django.db.models import Q, Count
 from individual.apps import IndividualConfig
 from individual.data_source import DATA_SOURCE_FIELD
 from individual.models import (
@@ -45,294 +43,6 @@ from tasks_management.services import UpdateCheckerLogicServiceMixin, CreateChec
 from workflow.systems.base import WorkflowHandler
 
 logger = logging.getLogger(__name__)
-
-# Default beneficiary status used for the legacy (bare-list) advanced_criteria format.
-DEFAULT_BENEFICIARY_STATUS = 'POTENTIAL'
-FILTERS_BY_TYPE = {
-    "string": {
-        "exact", "iexact", "startswith", "istartswith", "contains", "icontains"
-    },
-    "integer": {"exact", "lt", "lte", "gt", "gte"},
-    "decimal": {"exact", "lt", "lte", "gt", "gte"},
-    "number": {"exact", "lt", "lte", "gt", "gte"},
-    "numeric": {"exact", "lt", "lte", "gt", "gte"},
-    "date": {"exact", "lt", "lte", "gt", "gte"},
-    "boolean": {"exact"},
-}
-
-
-def _load_enrollment_benefit_plan(benefit_plan_id, status, expected_type=None):
-    if not benefit_plan_id:
-        raise ValidationError("A BenefitPlan is required for enrollment.")
-    if 'social_protection' not in apps.app_configs:
-        raise ValidationError("The Social Protection module is required for enrollment.")
-
-    from social_protection.models import BenefitPlan, BeneficiaryStatus
-
-    benefit_plan = BenefitPlan.objects.filter(
-        id=benefit_plan_id,
-        is_deleted=False,
-    ).first()
-    if not benefit_plan:
-        raise ValidationError("The selected BenefitPlan does not exist.")
-    if expected_type and benefit_plan.type != expected_type:
-        raise ValidationError(
-            f"BenefitPlan type {benefit_plan.type} cannot be used for "
-            f"{expected_type} enrollment."
-        )
-    if status not in BeneficiaryStatus.values:
-        raise ValidationError(f"Unsupported beneficiary status: {status}.")
-    return benefit_plan
-
-
-def merge_mandatory_enrolment_criteria(
-    custom_filters,
-    benefit_plan_id,
-    status,
-    expected_type=None,
-):
-    """Combine immutable system, saved Phase, and operator enrollment filters.
-
-    Immutable rules live in Social Protection module configuration. Editable Phase
-    rules live on ``BenefitPlan.json_ext['advanced_criteria']`` (legacy bare lists map
-    to ``POTENTIAL``). Both are normalized and prepended to validated operator filters,
-    so every category is de-duplicated and AND-ed regardless of browser input.
-    """
-    operator_filters = list(custom_filters or [])
-    benefit_plan = _load_enrollment_benefit_plan(
-        benefit_plan_id,
-        status,
-        expected_type,
-    )
-    _validate_operator_filters(operator_filters, benefit_plan)
-
-    from social_protection.apps import SocialProtectionConfig
-
-    configured = SocialProtectionConfig.mandatory_enrollment_criteria or {}
-    system_criteria = configured.get(expected_type or benefit_plan.type, {}) or {}
-
-    json_ext = benefit_plan.json_ext or {}
-    if isinstance(json_ext, str):
-        try:
-            json_ext = json.loads(json_ext)
-        except (TypeError, ValueError):
-            json_ext = {}
-
-    criteria = json_ext.get('advanced_criteria', {}) or {}
-    if isinstance(criteria, list):  # legacy: bare list belonged to the default status
-        criteria = {DEFAULT_BENEFICIARY_STATUS: criteria}
-
-    combined_filters = []
-    seen = set()
-    for entry in (
-        list(system_criteria.get(status, []) or [])
-        + list(criteria.get(status, []) or [])
-    ):
-        condition = _criterion_to_condition(entry)
-        if not condition:
-            raise ValidationError("Malformed mandatory enrollment criterion.")
-        if condition not in seen:
-            combined_filters.append(condition)
-            seen.add(condition)
-    for condition in operator_filters:
-        if condition not in seen:
-            combined_filters.append(condition)
-            seen.add(condition)
-    return combined_filters
-
-
-def _validate_operator_filters(custom_filters, benefit_plan):
-    schema = benefit_plan.beneficiary_data_schema or {}
-    if isinstance(schema, str):
-        try:
-            schema = json.loads(schema)
-        except (TypeError, ValueError):
-            schema = {}
-    if not isinstance(schema, dict) or not schema.get("properties"):
-        fallback_schema = IndividualConfig.individual_schema or {}
-        if isinstance(fallback_schema, dict):
-            schema = fallback_schema
-        else:
-            try:
-                schema = json.loads(fallback_schema)
-            except (TypeError, ValueError):
-                schema = {}
-    properties = schema.get("properties", {})
-
-    for condition in custom_filters:
-        if not isinstance(condition, str) or "=" not in condition:
-            raise ValidationError("Malformed enrollment operator filter.")
-        expression = condition.split("=", 1)[0]
-        parts = expression.rsplit("__", 2)
-        if len(parts) == 3:
-            field, filter_name, value_type = parts
-        elif len(parts) == 2:
-            field, value_type = parts
-            filter_name = "exact"
-        else:
-            raise ValidationError("Malformed enrollment operator filter.")
-
-        definition = properties.get(field)
-        if not isinstance(definition, dict):
-            raise ValidationError(
-                f"Enrollment operator filter field {field} is not allowed."
-            )
-        schema_type = definition.get("type")
-        compatible_types = {schema_type}
-        if schema_type == "number":
-            compatible_types.add("numeric")
-        if value_type not in compatible_types:
-            raise ValidationError(
-                f"Enrollment operator filter type {value_type} does not match "
-                f"{field}."
-            )
-        if filter_name not in FILTERS_BY_TYPE.get(value_type, set()):
-            raise ValidationError(
-                f"Enrollment operator filter {filter_name} is not allowed for "
-                f"{field}."
-            )
-
-
-def _criterion_to_condition(entry):
-    """Build the ``field__filter__type=value`` custom-filter string for a stored
-    advanced-criteria entry. Handles both stored shapes: the eligibility-panel shape
-    ``{field, filter, type, value}`` and the already-built ``{custom_filter_condition}``
-    (and a plain string). Format matches the FE (`AdvancedCriteriaForm`) and what
-    ``CustomFilterWizard.apply_filter_to_queryset`` parses."""
-    if isinstance(entry, str):
-        return entry
-    if not isinstance(entry, dict):
-        return None
-    if entry.get('custom_filter_condition'):
-        return entry['custom_filter_condition']
-    field, flt, typ = entry.get('field'), entry.get('filter'), entry.get('type')
-    if field is None or flt is None or typ is None:
-        return None
-    value = entry.get('value')
-    if typ == 'string':
-        value = json.dumps(value)
-    return f"{field}__{flt}__{typ}={value}"
-
-
-def build_individual_enrollment_queryset(custom_filters, benefit_plan_id, status):
-    filters = merge_mandatory_enrolment_criteria(
-        custom_filters,
-        benefit_plan_id,
-        status,
-        "INDIVIDUAL",
-    )
-    query = Individual.objects.filter(is_deleted=False)
-    subquery = GroupIndividual.objects.filter(
-        individual=OuterRef('pk')
-    ).exclude(is_deleted=True).values('individual')
-    query = CustomFilterWizardStorage.build_custom_filters_queryset(
-        "individual",
-        "Individual",
-        filters,
-        query,
-    )
-    return query.filter(~Q(pk__in=Subquery(subquery))).distinct()
-
-
-def build_group_enrollment_queryset(custom_filters, benefit_plan_id, status):
-    filters = merge_mandatory_enrolment_criteria(
-        custom_filters,
-        benefit_plan_id,
-        status,
-        "GROUP",
-    )
-    query = Group.objects.filter(is_deleted=False)
-    return CustomFilterWizardStorage.build_custom_filters_queryset(
-        "individual",
-        "Group",
-        filters,
-        query,
-    ).distinct()
-
-
-def build_individual_enrollment_selection(
-    custom_filters,
-    benefit_plan_id,
-    status,
-    user=None,
-    materialize_selected_ids=True,
-):
-    benefit_plan = _load_enrollment_benefit_plan(benefit_plan_id, status, "INDIVIDUAL")
-    eligible = build_individual_enrollment_queryset(custom_filters, benefit_plan_id, status)
-    from social_protection.enrolment_ranking import rank_and_cap_queryset
-    from social_protection.models import Beneficiary
-
-    active_assignment = Beneficiary.objects.filter(
-        individual_id=OuterRef("pk"),
-        benefit_plan_id=benefit_plan_id,
-        status=status,
-        is_deleted=False,
-    )
-    eligible = eligible.annotate(_assigned_to_selected_plan=Exists(active_assignment))
-    assigned = eligible.filter(_assigned_to_selected_plan=True)
-    unassigned = eligible.filter(_assigned_to_selected_plan=False)
-    current_count = Beneficiary.objects.filter(
-        benefit_plan_id=benefit_plan_id, status=status, is_deleted=False
-    ).count()
-    selected, metadata = rank_and_cap_queryset(
-        unassigned,
-        benefit_plan,
-        status,
-        current_count,
-        materialize_selected_ids=materialize_selected_ids,
-    )
-    return {
-        "individuals_assigned_to_selected_programme": assigned,
-        "individuals_not_assigned_to_selected_programme": selected,
-        "individual_query_with_filters": eligible,
-        "benefit_plan_id": benefit_plan_id,
-        "status": status,
-        "user": user,
-        **metadata,
-    }
-
-
-def build_group_enrollment_selection(
-    custom_filters,
-    benefit_plan_id,
-    status,
-    user=None,
-    materialize_selected_ids=True,
-):
-    benefit_plan = _load_enrollment_benefit_plan(benefit_plan_id, status, "GROUP")
-    eligible = build_group_enrollment_queryset(custom_filters, benefit_plan_id, status)
-    from social_protection.enrolment_ranking import rank_and_cap_queryset
-    from social_protection.models import GroupBeneficiary
-
-    active_assignment = GroupBeneficiary.objects.filter(
-        group_id=OuterRef("pk"),
-        benefit_plan_id=benefit_plan_id,
-        status=status,
-        is_deleted=False,
-    )
-    eligible = eligible.annotate(_assigned_to_selected_plan=Exists(active_assignment))
-    assigned = eligible.filter(_assigned_to_selected_plan=True)
-    unassigned = eligible.filter(_assigned_to_selected_plan=False)
-    current_count = GroupBeneficiary.objects.filter(
-        benefit_plan_id=benefit_plan_id, status=status, is_deleted=False
-    ).count()
-    selected, metadata = rank_and_cap_queryset(
-        unassigned,
-        benefit_plan,
-        status,
-        current_count,
-        materialize_selected_ids=materialize_selected_ids,
-    )
-    return {
-        "groups_assigned_to_selected_programme": assigned,
-        "groups_not_assigned_to_selected_programme": selected,
-        "group_query_with_filters": eligible,
-        "benefit_plan_id": benefit_plan_id,
-        "status": status,
-        "user": user,
-        **metadata,
-    }
-
 
 class IndividualService(BaseService, UpdateCheckerLogicServiceMixin, DeleteCheckerLogicServiceMixin):
     @register_service_signal('individual_service.create')
@@ -368,16 +78,6 @@ class IndividualService(BaseService, UpdateCheckerLogicServiceMixin, DeleteCheck
                 }
         except Exception as exc:
             return output_exception(model_name=self.OBJECT_TYPE.__name__, method="undo_delete", exception=exc)
-
-    @register_service_signal('individual_service.select_individuals_to_benefit_plan')
-    def select_individuals_to_benefit_plan(self, custom_filters, benefit_plan_id, status, user):
-        return build_individual_enrollment_selection(
-            custom_filters, benefit_plan_id, status, user
-        )
-
-    @register_service_signal('individual_service.create_accept_enrolment_task')
-    def create_accept_enrolment_task(self, individual_queryset, benefit_plan_id):
-        pass
 
     def _update_json_ext(self, obj_data):
         if not obj_data or 'json_ext' not in obj_data or 'location_id' not in obj_data:
@@ -525,12 +225,6 @@ class GroupService(
         group.save(user=self.user)
         return group
 
-
-    @register_service_signal('group_service.select_groups_to_benefit_plan')
-    def select_groups_to_benefit_plan(self, custom_filters, benefit_plan_id, status, user):
-        return build_group_enrollment_selection(
-            custom_filters, benefit_plan_id, status, user
-        )
 
 class CreateGroupAndMoveIndividualService(CreateCheckerLogicServiceMixin):
     OBJECT_TYPE = Group
