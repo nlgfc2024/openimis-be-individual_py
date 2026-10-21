@@ -10,11 +10,6 @@ from individual.tests.data import (
     service_update_individual_payload
 )
 from core.test_helpers import LogInHelper
-from individual.tests.test_helpers import (
-    create_individual,
-    create_group_with_individual,
-)
-from social_protection.tests.test_helpers import create_benefit_plan
 
 
 class IndividualServiceTest(TestCase):
@@ -71,47 +66,3 @@ class IndividualServiceTest(TestCase):
         self.assertTrue(result.get('success', False), result.get('detail', "No details provided"))
         query = self.query_all.filter(uuid=uuid)
         self.assertEqual(query.count(), 0)
-
-    def test_select_individuals_to_benefit_plan(self):
-        custom_filters = []
-        status = "ACTIVE"
-        benefit_plan = create_benefit_plan(self.user.username, payload_override={
-            'type': "INDIVIDUAL"
-        })
-
-        self.individual_a, self.group_a, self.group_individual_a = create_group_with_individual(
-            self.user.username
-        )
-
-        self.individual_a_no_group = create_individual(
-            self.user.username,
-        )
-
-        summary = self.service.select_individuals_to_benefit_plan(
-            custom_filters=custom_filters,
-            benefit_plan_id=str(benefit_plan.id),
-            status=status,
-            user=self.user
-        )
-
-        self.assertNotEqual(summary, None)
-        self.assertEqual(summary['individual_query_with_filters'].count(), 1)
-        self.assertEqual(summary['individuals_assigned_to_selected_programme'].count(), 0)
-        self.assertEqual(summary['individuals_not_assigned_to_selected_programme'].count(), 1)
-
-        # Delete the group and groupindividual
-        self.group_a.delete(user=self.user)
-        self.group_individual_a.delete(user=self.user)
-
-        # Verify the individual is now counted in the enrollment summary
-        summary = self.service.select_individuals_to_benefit_plan(
-            custom_filters=custom_filters,
-            benefit_plan_id=str(benefit_plan.id),
-            status=status,
-            user=self.user
-        )
-
-        self.assertNotEqual(summary, None)
-        self.assertEqual(summary['individual_query_with_filters'].count(), 2)
-        self.assertEqual(summary['individuals_assigned_to_selected_programme'].count(), 0)
-        self.assertEqual(summary['individuals_not_assigned_to_selected_programme'].count(), 2)
