@@ -38,7 +38,6 @@ DEFAULT_CONFIG = {
             "beneficiary_data_source": {"type": "string"}
         }
     }),
-    "individual_accept_enrolment": "individual_service.create_accept_enrolment_task",
     "validation_import_valid_items_workflow": "individual-import-valid-items",
     "validation_calculation_uuid": "4362f958-5894-435b-9bda-df6cadf88352",
     "validation_import_valid_items": "individual_validation.import_valid_items",
@@ -83,7 +82,6 @@ class IndividualConfig(AppConfig):
     python_individual_import_workflow_group = None
     python_individual_import_workflow_name = None
     individual_schema = None
-    individual_accept_enrolment = None
     validation_calculation_uuid = None
     validation_import_valid_items_workflow = None
     validation_import_valid_items = None
