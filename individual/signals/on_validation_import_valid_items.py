@@ -216,6 +216,9 @@ class BaseGroupColumnAggregationClass(ItemsUploadTaskCompletionEvent):
 
     @staticmethod
     def _individual_role_parser(individual_role):
+        # A member may have no role (e.g. a primary recipient who isn't the head)
+        if not individual_role:
+            return None
         return getattr(GroupIndividual.Role, individual_role.upper(), None)
 
     def _create_group_data_source(self, json_ext_data):

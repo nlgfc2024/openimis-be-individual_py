@@ -100,6 +100,11 @@ if 'opensearch_reports' in apps.app_configs:
             elif isinstance(related_instance, Individual):
                 return GroupIndividual.objects.filter(individual=related_instance)
 
+        def prepare_group(self, instance):
+            group = instance.group
+            json_ext = {k: v for k, v in (group.json_ext or {}).items() if k != 'members'}
+            return {'id': str(group.id), 'code': group.code, 'json_ext': json_ext}
+
         def prepare_json_ext(self, instance):
             json_ext_data = instance.json_ext
             json_data = self.__flatten_dict(json_ext_data)
