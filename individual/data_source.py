@@ -1,4 +1,5 @@
 import json
+import re
 
 from django.db.models import Q
 
@@ -29,6 +30,23 @@ def data_source_q(data_source):
     if data_source == DEFAULT_DATA_SOURCE:
         return tagged | ~Q(json_ext__has_key=DATA_SOURCE_FIELD)
     return tagged
+
+
+# Households carry their source in their code instead: a household's json_ext is copied from its head,
+# so a household without a head would lose a json_ext tag. Non-default sources prefix codes "<source>:".
+_GROUP_CODE_SOURCE_PREFIX = re.compile(r"^([A-Za-z][A-Za-z0-9_-]*):")
+
+
+def group_data_source(group):
+    match = _GROUP_CODE_SOURCE_PREFIX.match(str(group.code or ""))
+    return match.group(1) if match else DEFAULT_DATA_SOURCE
+
+
+def group_data_source_q(data_source):
+    """Households of data_source, by code; the default source owns codes without a source prefix."""
+    if data_source == DEFAULT_DATA_SOURCE:
+        return ~Q(code__regex=_GROUP_CODE_SOURCE_PREFIX.pattern)
+    return Q(code__startswith=f"{data_source}:")
 
 
 def data_source_group_code(data_source, group_code):

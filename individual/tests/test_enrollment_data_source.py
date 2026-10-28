@@ -6,7 +6,9 @@ from django.test import SimpleTestCase, TestCase
 
 from core.test_helpers import LogInHelper
 from individual.models import Individual
-from individual.data_source import benefit_plan_data_source, data_source_group_code, data_source_q
+from individual.data_source import (
+    benefit_plan_data_source, data_source_group_code, data_source_q, group_data_source,
+)
 from individual.services import build_group_enrollment_queryset, build_individual_enrollment_queryset
 from individual.tests.test_helpers import create_group, create_individual
 from social_protection.apps import SocialProtectionConfig
@@ -21,6 +23,11 @@ class BenefitPlanDataSourceTest(SimpleTestCase):
     def test_reads_json_ext_stored_as_text(self):
         plan = SimpleNamespace(json_ext=json.dumps({"data_source": "pwp"}))
         self.assertEqual(benefit_plan_data_source(plan), "pwp")
+
+    def test_group_source_comes_from_its_code(self):
+        self.assertEqual(group_data_source(SimpleNamespace(code="pwp:94104570")), "pwp")
+        self.assertEqual(group_data_source(SimpleNamespace(code="94104570")), "ubr")
+        self.assertEqual(group_data_source(SimpleNamespace(code=None)), "ubr")
 
     def test_group_code_is_prefixed_only_for_non_default_sources(self):
         self.assertEqual(data_source_group_code("ubr", "30874398"), "30874398")
@@ -64,15 +71,16 @@ class EnrollmentDataSourceTest(TestCase):
 
         self.assertEqual(self._eligible_individuals(self._plan("INDIVIDUAL", "pwp")), {pwp.id})
 
-    def test_group_plan_enrolls_only_its_own_source(self):
-        create_group(self.user.username, {"code": "30874398", "json_ext": {"able_bodied": False}})
-        pwp_group = create_group(self.user.username, {
-            "code": "pwp:30874398", "json_ext": {"able_bodied": False, "source_type": "pwp"},
-        })
+    def _eligible_groups(self, plan):
+        return set(build_group_enrollment_queryset([], str(plan.id), "ACTIVE").values_list("id", flat=True))
 
-        eligible = build_group_enrollment_queryset([], str(self._plan("GROUP", "pwp").id), "ACTIVE")
+    def test_group_plans_use_the_household_code_not_its_json_ext(self):
+        # No source_type in json_ext, as for a household without a head (json_ext is copied from the head)
+        msr_group = create_group(self.user.username, {"code": "30874398", "json_ext": {"able_bodied": False}})
+        pwp_group = create_group(self.user.username, {"code": "pwp:94104570", "json_ext": {"able_bodied": False}})
 
-        self.assertEqual(set(eligible.values_list("id", flat=True)), {pwp_group.id})
+        self.assertEqual(self._eligible_groups(self._plan("GROUP", "pwp")), {pwp_group.id})
+        self.assertEqual(self._eligible_groups(self._plan("GROUP")), {msr_group.id})
 
     def test_data_source_q_matches_untagged_only_for_default(self):
         untagged, pwp = self._individual(), self._individual("pwp")

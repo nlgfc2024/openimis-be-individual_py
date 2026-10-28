@@ -30,7 +30,7 @@ from individual.utils import (
     fetch_summary_of_broken_items
 )
 from individual.enrolment_ranking import rank_and_cap_queryset
-from individual.data_source import benefit_plan_json_ext, benefit_plan_data_source, data_source_q
+from individual.data_source import benefit_plan_json_ext, benefit_plan_data_source, data_source_q, group_data_source_q
 from individual.validation import (
     IndividualValidation,
     IndividualDataSourceValidation,
@@ -239,7 +239,7 @@ def build_group_enrollment_queryset(custom_filters, benefit_plan_id, status):
         "GROUP",
     )
     benefit_plan = _load_enrollment_benefit_plan(benefit_plan_id, status, "GROUP")
-    query = Group.objects.filter(data_source_q(benefit_plan_data_source(benefit_plan)), is_deleted=False)
+    query = Group.objects.filter(group_data_source_q(benefit_plan_data_source(benefit_plan)), is_deleted=False)
     return CustomFilterWizardStorage.build_custom_filters_queryset(
         "individual",
         "Group",
