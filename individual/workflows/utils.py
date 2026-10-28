@@ -10,6 +10,7 @@ from django.db import ProgrammingError, connection
 
 from core.models import User
 from individual.apps import IndividualConfig
+from individual.data_source import DATA_SOURCE_FIELD
 from individual.models import IndividualDataSource
 from individual.services import IndividualImportService
 from individual.utils import load_dataframe
@@ -51,7 +52,7 @@ class BasePythonWorkflowExecutor(metaclass=ABCMeta):
         """
         df_headers = set(self.df.columns)
         schema_properties = set(self.schema.get('properties', {}).keys())
-        schema_properties.update(['recipient_info', 'group_code', 'individual_role'])
+        schema_properties.update(['recipient_info', 'group_code', 'individual_role', DATA_SOURCE_FIELD])
         required_headers = set(IndividualConfig.individual_base_fields)
         if is_update:
             required_headers.add('ID')
