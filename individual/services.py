@@ -30,6 +30,7 @@ from individual.utils import (
     fetch_summary_of_broken_items
 )
 from individual.enrolment_ranking import rank_and_cap_queryset
+from individual.enrollment_location import DISTRICT_FIELD, district_from_condition
 from individual.validation import (
     IndividualValidation,
     IndividualDataSourceValidation,
@@ -191,6 +192,10 @@ def _validate_operator_filters(custom_filters, benefit_plan):
                 f"Enrollment operator filter {filter_name} is not allowed for "
                 f"{field}."
             )
+        if field == DISTRICT_FIELD:
+            if benefit_plan.type != "GROUP":
+                raise ValidationError("District enrollment filtering is only supported for households.")
+            district_from_condition(condition)
 
 
 def _criterion_to_condition(entry):

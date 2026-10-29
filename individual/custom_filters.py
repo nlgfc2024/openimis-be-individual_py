@@ -24,7 +24,7 @@ class IndividualCustomFilterWizard(CustomFilterWizardInterface):
 
     def load_definition(self, tuple_type: type, **kwargs) -> List[namedtuple]:
         individual_schema = IndividualConfig.individual_schema
-        additional_params = kwargs.get('additional_params', None)
+        additional_params = kwargs.get('additional_params') or {}
         benefit_plan_id = additional_params.get("benefitPlan", None)
         if benefit_plan_id and 'social_protection' in apps.app_configs:
             from social_protection.models import BenefitPlan
@@ -106,6 +106,14 @@ class IndividualCustomFilterWizard(CustomFilterWizardInterface):
 class GroupCustomFilterWizard(IndividualCustomFilterWizard):
 
     OBJECT_CLASS = Group
+
+    def load_definition(self, tuple_type, **kwargs):
+        definitions = super().load_definition(tuple_type, **kwargs)
+        return [
+            tuple_type(field="district_id", filter=["exact"], type="integer")
+            if definition.field == "district_id" else definition
+            for definition in definitions
+        ]
 
 
 class GroupIndividualCustomFilterWizard(IndividualCustomFilterWizard):
