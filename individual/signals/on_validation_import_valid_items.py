@@ -13,6 +13,7 @@ from individual.models import (
     IndividualDataSource,
     IndividualDataUploadRecords, Group, GroupIndividual, Individual, GroupDataSource
 )
+from individual.data_source import DATA_SOURCE_FIELD, DEFAULT_DATA_SOURCE, data_source_q
 from individual.services import GroupService
 from tasks_management.apps import TasksManagementConfig
 from tasks_management.models import Task
@@ -178,7 +179,9 @@ class BaseGroupColumnAggregationClass(ItemsUploadTaskCompletionEvent):
             ids = individual_group['record_ids']
             ids_str = [str(uuid) for uuid in ids]
             group_code = individual_group['value']
-            group = Group.objects.filter(code=group_code).first()
+            # Households are matched within their members' data source, so sources never share one
+            data_source = self._data_source_of(ids)
+            group = Group.objects.filter(data_source_q(data_source), code=group_code).first()
 
             if group:
                 assigned_individual_ids = list(Individual.objects.filter(
@@ -190,9 +193,15 @@ class BaseGroupColumnAggregationClass(ItemsUploadTaskCompletionEvent):
                 obj_data = {"id": str(group.id), "individuals_data": update_individuals_data, "code": group_code}
             else:
                 individuals_data = self._build_individual_data(ids_str)
-                obj_data = {"individuals_data": individuals_data, "code": group_code}
+                obj_data = {"individuals_data": individuals_data, "code": group_code,
+                            "json_ext": {DATA_SOURCE_FIELD: data_source}}
 
             self._create_group_data_source(obj_data)
+
+    @staticmethod
+    def _data_source_of(individual_ids):
+        tags = Individual.objects.filter(id__in=individual_ids).values_list(f"json_ext__{DATA_SOURCE_FIELD}", flat=True)
+        return next((tag for tag in tags if tag), DEFAULT_DATA_SOURCE)
 
     def _build_individual_data(self, ids):
         def build_single_individual_data(individual_id):
@@ -231,7 +240,8 @@ class BaseGroupColumnAggregationClass(ItemsUploadTaskCompletionEvent):
             ids_str = [str(uuid) for uuid in ids]
             code = self.generate_unique_code()
             individuals_data = self._build_individual_data(ids_str)
-            obj_data = {"individuals_data": individuals_data, "code": code}
+            obj_data = {"individuals_data": individuals_data, "code": code,
+                        "json_ext": {DATA_SOURCE_FIELD: self._data_source_of(ids)}}
             self._create_group_data_source(obj_data)
 
     @staticmethod

@@ -1,11 +1,11 @@
 import json
-import re
 
 from django.db.models import Q
 
 # Imports tag records with the source they came from (json_ext.source_type, e.g. by msr_etl) and a
 # benefit plan enrolls only from its own source (json_ext.data_source), so programmes on one instance
-# never share people. Untagged records and plans without a data_source belong to the default source.
+# never share people. Households carry the tag too, kept through head changes (update_json_ext_for_group).
+# Untagged records and plans without a data_source belong to the default source.
 DATA_SOURCE_FIELD = "source_type"
 DEFAULT_DATA_SOURCE = "ubr"
 
@@ -32,27 +32,6 @@ def data_source_q(data_source):
     return tagged
 
 
-# Households carry their source in their code instead: a household's json_ext is copied from its head,
-# so a household without a head would lose a json_ext tag. Non-default sources prefix codes "<source>:".
-_GROUP_CODE_SOURCE_PREFIX = re.compile(r"^([A-Za-z][A-Za-z0-9_-]*):")
-
-
-def group_data_source(group):
-    match = _GROUP_CODE_SOURCE_PREFIX.match(str(group.code or ""))
-    return match.group(1) if match else DEFAULT_DATA_SOURCE
-
-
-def group_data_source_q(data_source):
-    """Households of data_source, by code; the default source owns codes without a source prefix."""
-    if data_source == DEFAULT_DATA_SOURCE:
-        return ~Q(code__regex=_GROUP_CODE_SOURCE_PREFIX.pattern)
-    return Q(code__startswith=f"{data_source}:")
-
-
-def data_source_group_code(data_source, group_code):
-    """Households are matched by code on import, so a non-default source gets its own codes."""
-    group_code = str(group_code)
-    prefix = f"{data_source}:"
-    if data_source == DEFAULT_DATA_SOURCE or group_code.startswith(prefix):
-        return group_code
-    return f"{prefix}{group_code}"
+def record_data_source(record):
+    """Source of an individual or household: its json_ext tag, else the default source."""
+    return (record.json_ext or {}).get(DATA_SOURCE_FIELD) or DEFAULT_DATA_SOURCE

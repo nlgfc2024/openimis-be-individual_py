@@ -5,10 +5,8 @@ from types import SimpleNamespace
 from django.test import SimpleTestCase, TestCase
 
 from core.test_helpers import LogInHelper
-from individual.models import Individual
-from individual.data_source import (
-    benefit_plan_data_source, data_source_group_code, data_source_q, group_data_source,
-)
+from individual.models import GroupIndividual, Individual
+from individual.data_source import benefit_plan_data_source, data_source_q, record_data_source
 from individual.services import build_group_enrollment_queryset, build_individual_enrollment_queryset
 from individual.tests.test_helpers import create_group, create_individual
 from social_protection.apps import SocialProtectionConfig
@@ -24,15 +22,9 @@ class BenefitPlanDataSourceTest(SimpleTestCase):
         plan = SimpleNamespace(json_ext=json.dumps({"data_source": "pwp"}))
         self.assertEqual(benefit_plan_data_source(plan), "pwp")
 
-    def test_group_source_comes_from_its_code(self):
-        self.assertEqual(group_data_source(SimpleNamespace(code="pwp:94104570")), "pwp")
-        self.assertEqual(group_data_source(SimpleNamespace(code="94104570")), "ubr")
-        self.assertEqual(group_data_source(SimpleNamespace(code=None)), "ubr")
-
-    def test_group_code_is_prefixed_only_for_non_default_sources(self):
-        self.assertEqual(data_source_group_code("ubr", "30874398"), "30874398")
-        self.assertEqual(data_source_group_code("pwp", "30874398"), "pwp:30874398")
-        self.assertEqual(data_source_group_code("pwp", "pwp:30874398"), "pwp:30874398")
+    def test_record_source_is_its_tag_or_the_default(self):
+        self.assertEqual(record_data_source(SimpleNamespace(json_ext={"source_type": "sctp"})), "sctp")
+        self.assertEqual(record_data_source(SimpleNamespace(json_ext=None)), "ubr")
 
 
 class EnrollmentDataSourceTest(TestCase):
@@ -74,13 +66,27 @@ class EnrollmentDataSourceTest(TestCase):
     def _eligible_groups(self, plan):
         return set(build_group_enrollment_queryset([], str(plan.id), "ACTIVE").values_list("id", flat=True))
 
-    def test_group_plans_use_the_household_code_not_its_json_ext(self):
-        # No source_type in json_ext, as for a household without a head (json_ext is copied from the head)
+    def test_group_plans_enroll_only_households_of_their_source(self):
+        # Same code in both sources: households are told apart by their tag, not their code
         msr_group = create_group(self.user.username, {"code": "30874398", "json_ext": {"able_bodied": False}})
-        pwp_group = create_group(self.user.username, {"code": "pwp:94104570", "json_ext": {"able_bodied": False}})
+        pwp_group = create_group(self.user.username, {
+            "code": "30874398", "json_ext": {"able_bodied": False, "source_type": "pwp"},
+        })
 
         self.assertEqual(self._eligible_groups(self._plan("GROUP", "pwp")), {pwp_group.id})
         self.assertEqual(self._eligible_groups(self._plan("GROUP")), {msr_group.id})
+
+    def test_household_keeps_its_source_through_head_changes(self):
+        # Saving a membership re-copies the household's json_ext from its head
+        group = create_group(self.user.username, {"code": "47407473", "json_ext": {"source_type": "sctp"}})
+        GroupIndividual(group=group, individual=self._individual("sctp"), role=None).save(username=self.user.username)
+        group.refresh_from_db()
+        self.assertEqual(group.json_ext["source_type"], "sctp")  # no head
+
+        head = self._individual("ubr")  # a head tagged otherwise must not overwrite it
+        GroupIndividual(group=group, individual=head, role=GroupIndividual.Role.HEAD).save(username=self.user.username)
+        group.refresh_from_db()
+        self.assertEqual(group.json_ext["source_type"], "sctp")
 
     def test_data_source_q_matches_untagged_only_for_default(self):
         untagged, pwp = self._individual(), self._individual("pwp")

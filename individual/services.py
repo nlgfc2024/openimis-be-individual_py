@@ -30,7 +30,7 @@ from individual.utils import (
     fetch_summary_of_broken_items
 )
 from individual.enrolment_ranking import rank_and_cap_queryset
-from individual.data_source import benefit_plan_json_ext, benefit_plan_data_source, data_source_q, group_data_source_q
+from individual.data_source import DATA_SOURCE_FIELD, benefit_plan_json_ext, benefit_plan_data_source, data_source_q
 from individual.validation import (
     IndividualValidation,
     IndividualDataSourceValidation,
@@ -239,7 +239,7 @@ def build_group_enrollment_queryset(custom_filters, benefit_plan_id, status):
         "GROUP",
     )
     benefit_plan = _load_enrollment_benefit_plan(benefit_plan_id, status, "GROUP")
-    query = Group.objects.filter(group_data_source_q(benefit_plan_data_source(benefit_plan)), is_deleted=False)
+    query = Group.objects.filter(data_source_q(benefit_plan_data_source(benefit_plan)), is_deleted=False)
     return CustomFilterWizardStorage.build_custom_filters_queryset(
         "individual",
         "Group",
@@ -657,7 +657,11 @@ class GroupAndGroupIndividualAlignmentService:
 
         head_str = f'{head.individual.first_name} {head.individual.last_name}' if head else None
         head_id = str(head.individual.id) if head else None
-        head_json_ext = head.individual.json_ext if head and head.individual.json_ext else {}
+        # The household's data source is its own (set on import), never copied from or cleared by its head
+        head_json_ext = {
+            k: v for k, v in (head.individual.json_ext if head and head.individual.json_ext else {}).items()
+            if k != DATA_SOURCE_FIELD
+        }
 
         primary_str = f'{primary.individual.first_name} {primary.individual.last_name}' if primary else None
         primary_id = str(primary.individual.id) if primary else None
@@ -668,7 +672,7 @@ class GroupAndGroupIndividualAlignmentService:
         changes_to_save = {}
         json_ext_minus_keys = {k: v for k, v in group.json_ext.items() if k not in [
             "members", "head", "head_id", "primary_recipient",
-            "primary_recipient_id", "secondary_recipient", "secondary_recipient_id"
+            "primary_recipient_id", "secondary_recipient", "secondary_recipient_id", DATA_SOURCE_FIELD,
         ]}
 
         if json_ext_minus_keys != head_json_ext:
