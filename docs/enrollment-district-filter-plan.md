@@ -1,6 +1,6 @@
 # Household enrollment district filter: openimis-be-individual_py
 
-Status: implementation planning only. This branch currently contains documentation, not a working district filter.
+Status: implementation and local validation delivered. See the implementation evidence below; review, merge and staging rollout remain separate steps.
 
 ## Branch and ownership
 
@@ -8,7 +8,7 @@ Status: implementation planning only. This branch currently contains documentati
 - Feature branch: `feature/household-enrollment-district-filter`.
 - Assignee: @YutakaX17.
 - Requested reviewers: @mcleanka, @uniquedj95, @Lenwell89.
-- Target project: https://github.com/orgs/nlgfc2024/projects/12 (added; initial status: To Do).
+- Target project: https://github.com/orgs/nlgfc2024/projects/12 (implementation submitted for review; see current project status).
 
 ## Behavior and shared contract
 
@@ -20,7 +20,7 @@ The backend must use Group.location and district ancestry, intersect with authen
 
 ## Small reviewable commits
 
-Issue order below is the intended commit sequence in this repository. Each implementation commit includes its focused regression tests and references its issue. Record actual test commands/results and commit SHA in the issue; do not mark work complete based on this planning file.
+Issue order below defines the review units in this repository. Each implementation commit includes its focused regression tests and references its issue. Record actual test commands/results and commit SHA in the issue; do not mark work complete based on this planning file.
 
 ### BE-1: Define and validate the household district enrollment filter
 
@@ -99,3 +99,17 @@ Keep commits separated by issue for reviewer navigation. Add new commits for rev
 
 Initial mw/develop commit for this repository: `150d6518f31f6e87ad5bfad9cb4b0b4b3b607366`.
 
+
+## Implementation evidence (29 October 2026)
+
+- Feature code is now present on this branch; the earlier planning-only state is superseded. Issues remain open until review and merge.
+- Backend contract, scope and API regression suite: 43 passing tests on isolated PostgreSQL 16.
+- Frontend: 19 cases across three test files, focused ESLint, individual/core module builds and assembled production build pass.
+- Offline configuration preparation: four preservation/idempotence tests pass; installed Social Protection validator and GROUP merge contract verified.
+- Staging browser UAT and production configuration changes have not been performed. The frontend assembly acceptance document tracks the remaining steps in openimis-fe_js#10.
+
+Implementation commits in this repository before this documentation update:
+
+- `f06ac74 test(enrollment): verify district preview and enrollment parity`
+- `58499ff feat(enrollment): intersect district ancestry with user location scope`
+- `6bb6e1e feat(enrollment): define and validate district filter`
