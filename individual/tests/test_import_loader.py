@@ -53,3 +53,28 @@ class ImportLoaderTest(SimpleTestCase):
         self.assertEqual(stored["type_of_business"], "001")
         self.assertEqual(stored["household_mobile_number"], "991234567")
         self.assertEqual(stored["ubr_id"], 123)
+
+    def _stored_rows(self, content, content_type):
+        dataframe = IndividualImportService(None)._load_import_file(
+            SimpleUploadedFile("import", content, content_type=content_type),
+        )
+        return [json.loads(dataframe.iloc[index].to_json()) for index in range(len(dataframe.index))]
+
+    def _assert_missing_value_tokens_kept(self, rows):
+        # Text columns lose only empty cells; other columns keep pandas' missing-value handling
+        self.assertEqual([row["type_of_business"] for row in rows], ["NA", "NULL", None])
+        self.assertEqual([row["ubr_id"] for row in rows], [1, None, None])
+
+    def test_csv_keeps_literal_missing_value_tokens_in_text_columns(self):
+        rows = self._stored_rows(b"type_of_business,ubr_id\nNA,1\nNULL,NA\n,\n", "text/csv")
+
+        self._assert_missing_value_tokens_kept(rows)
+
+    def test_excel_keeps_literal_missing_value_tokens_in_text_columns(self):
+        buffer = io.BytesIO()
+        # A name per row: an all-empty row isn't written to the sheet
+        pd.DataFrame({
+            "first_name": ["A", "B", "C"], "type_of_business": ["NA", "NULL", None], "ubr_id": [1, "NA", None],
+        }).to_excel(buffer, index=False)
+
+        self._assert_missing_value_tokens_kept(self._stored_rows(buffer.getvalue(), XLSX))

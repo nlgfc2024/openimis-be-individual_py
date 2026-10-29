@@ -779,7 +779,7 @@ class GroupAndGroupIndividualAlignmentService:
         old_primary.save(user=self.user)
 
 
-def _text_column_dtypes():
+def _text_columns():
     """Columns read as text: the ones individual_schema declares as strings, so "001" isn't loaded as 1."""
     schema = IndividualConfig.individual_schema or {}
     if isinstance(schema, str):
@@ -791,20 +791,32 @@ def _text_column_dtypes():
         name for name, field in (schema.get("properties") or {}).items()
         if isinstance(field, dict) and field.get("type") == "string"
     }
-    return {name: str for name in declared | {"location_code"}}
+    return declared | {"location_code"}
+
+
+def _load_with_text_columns(read, import_file):
+    """Loads with pandas' inference, then re-reads the text columns as written: only an empty cell is
+    missing there, so codes like "NA" or "NULL" aren't lost. Other columns keep pandas' defaults."""
+    dataframe = read(import_file)
+    text_columns = [column for column in dataframe.columns if column in _text_columns()]
+    if text_columns:
+        import_file.seek(0)
+        text = read(import_file, usecols=text_columns, dtype=str, keep_default_na=False, na_values=[""])
+        dataframe[text_columns] = text[text_columns]
+    return dataframe
 
 
 class IndividualImportService:
     import_loaders = {
         # .csv
-        'text/csv': lambda f: pd.read_csv(f, dtype=_text_column_dtypes()),
+        'text/csv': lambda f: _load_with_text_columns(pd.read_csv, f),
         # .xlsx
         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
-            lambda f: pd.read_excel(f, dtype=_text_column_dtypes()),
+            lambda f: _load_with_text_columns(pd.read_excel, f),
         # .xls
-        'application/vnd.ms-excel': lambda f: pd.read_excel(f, dtype=_text_column_dtypes()),
+        'application/vnd.ms-excel': lambda f: _load_with_text_columns(pd.read_excel, f),
         # .ods
-        'application/vnd.oasis.opendocument.spreadsheet': lambda f: pd.read_excel(f, dtype=_text_column_dtypes()),
+        'application/vnd.oasis.opendocument.spreadsheet': lambda f: _load_with_text_columns(pd.read_excel, f),
     }
 
     def __init__(self, user):
