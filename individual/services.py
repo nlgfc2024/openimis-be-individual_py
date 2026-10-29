@@ -331,7 +331,22 @@ def build_group_enrollment_selection(
         current_count,
         materialize_selected_ids=materialize_selected_ids,
     )
+    # Existing enrollments are a stock count, independent of current eligibility.
+    # Apply district and access scope, but not VERIFIED or other operator criteria.
+    enrolled_scope = scoped_groups(Group.objects.filter(is_deleted=False), user)
+    for condition in custom_filters or []:
+        district = district_from_condition(condition)
+        if district is not None:
+            enrolled_scope = CustomFilterWizardStorage.build_custom_filters_queryset(
+                "individual", "Group", [condition], enrolled_scope,
+            )
+    enrolled_count = enrolled_scope.annotate(
+        _enrolled_in_phase=Exists(active_assignment),
+    ).filter(_enrolled_in_phase=True).distinct().count()
     return {
+        "verified_unenrolled_households": unassigned.filter(json_ext__validation_status="VERIFIED").count(),
+        "phase_target": benefit_plan.max_beneficiaries,
+        "enrolled_households": enrolled_count,
         "groups_assigned_to_selected_programme": assigned,
         "groups_not_assigned_to_selected_programme": selected,
         "group_query_with_filters": eligible,

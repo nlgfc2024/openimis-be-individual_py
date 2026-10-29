@@ -207,3 +207,78 @@ class DistrictEnrollmentQueryTest(TestCase):
         selected = build_group_enrollment_selection(self.conditions(self.a), str(self.plan.id), "ACTIVE", self.user)
         self.assertEqual(selected["pool_size"], 1)
         self.assertEqual(selected["will_enrol"], 0)
+
+    def summary(self, district=None):
+        import graphene
+        from individual.schema import Query
+        context = RequestFactory().get('/graphql')
+        context.user = self.user
+        result = graphene.Schema(query=Query).execute('''
+          query($plan: String!, $filters: [String]) {
+            groupEnrollmentSummary(benefitPlanId: $plan, status: "ACTIVE", customFilters: $filters) {
+              verifiedUnenrolledHouseholds phaseTarget enrolledHouseholds
+            }
+          }
+        ''', variable_values={
+            'plan': str(self.plan.id),
+            'filters': self.conditions(district) if district else [],
+        }, context_value=context)
+        self.assertFalse(result.errors, result.errors)
+        return result.data['groupEnrollmentSummary']
+
+    def test_three_card_target_is_configured_total_without_ranking(self):
+        for target in (100, 0, None):
+            self.plan.max_beneficiaries = target
+            self.plan.save(username=self.admin.username)
+            summary = self.summary(self.a)
+            self.assertEqual(summary, {
+                'verifiedUnenrolledHouseholds': 1,
+                'phaseTarget': target,
+                'enrolledHouseholds': 0,
+            })
+
+    def test_existing_enrollments_ignore_eligibility_but_respect_scope_and_status(self):
+        from social_protection.models import GroupBeneficiary
+        for group, status, deleted in (
+            (self.pending, 'ACTIVE', False),  # no longer verified, still enrolled
+            (self.selected, 'SUSPENDED', False),
+            (self.selected, 'ACTIVE', True),
+            (self.other, 'ACTIVE', False),  # outside permitted district
+            (self.sibling, 'ACTIVE', False),  # outside permitted TA
+        ):
+            GroupBeneficiary(group=group, benefit_plan=self.plan, status=status,
+                             is_deleted=deleted).save(username=self.admin.username)
+        self.assertEqual(self.summary(self.a), {
+            'verifiedUnenrolledHouseholds': 1, 'phaseTarget': self.plan.max_beneficiaries,
+            'enrolledHouseholds': 1,
+        })
+        self.assertEqual(self.summary()['enrolledHouseholds'], 1)
+        GroupBeneficiary(group=self.selected, benefit_plan=self.plan, status='ACTIVE').save(
+            username=self.admin.username)
+        self.assertEqual(self.summary(self.a)['verifiedUnenrolledHouseholds'], 0)
+        self.assertEqual(self.summary(self.a)['enrolledHouseholds'], 2)
+        Group.objects.filter(pk=self.pending.pk).update(is_deleted=True)
+        self.assertEqual(self.summary(self.a)['enrolledHouseholds'], 1)
+
+    @override_settings(ROW_SECURITY=False)
+    def test_existing_enrollment_card_follows_district_and_clearing(self):
+        from social_protection.models import GroupBeneficiary
+        for group in (self.pending, self.other):
+            GroupBeneficiary(group=group, benefit_plan=self.plan, status='ACTIVE').save(
+                username=self.admin.username)
+        self.assertEqual(self.summary(self.a)['enrolledHouseholds'], 1)
+        self.assertEqual(self.summary(self.b)['enrolledHouseholds'], 1)
+        self.assertEqual(self.summary()['enrolledHouseholds'], 2)
+
+    def test_verified_pool_is_before_cap_and_target_is_not_remaining_capacity(self):
+        from social_protection.models import GroupBeneficiary
+        self.plan.max_beneficiaries = 1
+        self.plan.json_ext['enrolment_ranking'] = {
+            'ACTIVE': {'order_by': ['id'], 'limit': {'percentage': 100}},
+        }
+        self.plan.save(username=self.admin.username)
+        GroupBeneficiary(group=self.other, benefit_plan=self.plan, status='ACTIVE').save(
+            username=self.admin.username)
+        self.assertEqual(self.summary(self.a), {
+            'verifiedUnenrolledHouseholds': 1, 'phaseTarget': 1, 'enrolledHouseholds': 0,
+        })

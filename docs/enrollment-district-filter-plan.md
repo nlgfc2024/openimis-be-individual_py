@@ -113,3 +113,21 @@ Implementation commits in this repository before this documentation update:
 - `f06ac74 test(enrollment): verify district preview and enrollment parity`
 - `58499ff feat(enrollment): intersect district ancestry with user location scope`
 - `6bb6e1e feat(enrollment): define and validate district filter`
+
+## Three-card household preview follow-up
+
+Sub-issue #24 (child of #21), implemented in PR #22. The additive
+`groupEnrollmentSummary` fields are:
+
+- `verifiedUnenrolledHouseholds`: eligible VERIFIED households before the intake
+  cap, excluding non-deleted enrollment in the selected phase/status.
+- `phaseTarget`: the stored `BenefitPlan.max_beneficiaries`, including numeric
+  zero or null when unconfigured. It is independent of ranking configuration.
+- `enrolledHouseholds`: distinct, non-deleted households already enrolled in the
+  selected phase/status, restricted to the selected district and authenticated
+  scope, regardless of whether they still satisfy eligibility conditions.
+
+Clearing the district includes all permitted locations. Existing summary fields
+and enrollment execution/cap policy are unchanged. No Social Protection module
+or assembly change is included in this follow-up. Deploy the backend fields
+before the frontend query that requests them.

@@ -512,6 +512,9 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
         ).count()
 
         return GroupSummaryEnrollmentGQLType(
+            verified_unenrolled_households=selection["verified_unenrolled_households"],
+            phase_target=selection["phase_target"],
+            enrolled_households=selection["enrolled_households"],
             number_of_selected_groups=number_of_selected_groups,
             total_number_of_groups=total_number_of_groups,
             number_of_groups_not_assigned_to_programme=groups_not_assigned_to_programme,
