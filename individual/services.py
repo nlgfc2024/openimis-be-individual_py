@@ -16,7 +16,7 @@ from django.apps import apps
 # from django.utils.translation import gettext as _
 from django.db.models import Q, OuterRef, Subquery, Count, Exists
 from individual.apps import IndividualConfig
-from individual.data_source import DATA_SOURCE_FIELD
+from individual.data_source import DATA_SOURCE_FIELD, benefit_plan_data_source, benefit_plan_json_ext, data_source_q
 from individual.models import (
     Individual,
     IndividualDataSource,
@@ -112,12 +112,7 @@ def merge_mandatory_enrolment_criteria(
     configured = SocialProtectionConfig.mandatory_enrollment_criteria or {}
     system_criteria = configured.get(expected_type or benefit_plan.type, {}) or {}
 
-    json_ext = benefit_plan.json_ext or {}
-    if isinstance(json_ext, str):
-        try:
-            json_ext = json.loads(json_ext)
-        except (TypeError, ValueError):
-            json_ext = {}
+    json_ext = benefit_plan_json_ext(benefit_plan)
 
     criteria = json_ext.get('advanced_criteria', {}) or {}
     if isinstance(criteria, list):  # legacy: bare list belonged to the default status
@@ -222,7 +217,8 @@ def build_individual_enrollment_queryset(custom_filters, benefit_plan_id, status
         status,
         "INDIVIDUAL",
     )
-    query = Individual.objects.filter(is_deleted=False)
+    benefit_plan = _load_enrollment_benefit_plan(benefit_plan_id, status, "INDIVIDUAL")
+    query = Individual.objects.filter(data_source_q(benefit_plan_data_source(benefit_plan)), is_deleted=False)
     subquery = GroupIndividual.objects.filter(
         individual=OuterRef('pk')
     ).exclude(is_deleted=True).values('individual')
@@ -242,7 +238,8 @@ def build_group_enrollment_queryset(custom_filters, benefit_plan_id, status):
         status,
         "GROUP",
     )
-    query = Group.objects.filter(is_deleted=False)
+    benefit_plan = _load_enrollment_benefit_plan(benefit_plan_id, status, "GROUP")
+    query = Group.objects.filter(data_source_q(benefit_plan_data_source(benefit_plan)), is_deleted=False)
     return CustomFilterWizardStorage.build_custom_filters_queryset(
         "individual",
         "Group",
