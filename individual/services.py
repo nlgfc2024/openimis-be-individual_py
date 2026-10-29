@@ -779,16 +779,32 @@ class GroupAndGroupIndividualAlignmentService:
         old_primary.save(user=self.user)
 
 
+def _text_column_dtypes():
+    """Columns read as text: the ones individual_schema declares as strings, so "001" isn't loaded as 1."""
+    schema = IndividualConfig.individual_schema or {}
+    if isinstance(schema, str):
+        try:
+            schema = json.loads(schema)
+        except ValueError:
+            schema = {}
+    declared = {
+        name for name, field in (schema.get("properties") or {}).items()
+        if isinstance(field, dict) and field.get("type") == "string"
+    }
+    return {name: str for name in declared | {"location_code"}}
+
+
 class IndividualImportService:
     import_loaders = {
         # .csv
-        'text/csv': lambda f: pd.read_csv(f, dtype={"location_code": str}),
+        'text/csv': lambda f: pd.read_csv(f, dtype=_text_column_dtypes()),
         # .xlsx
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': lambda f: pd.read_excel(f),
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+            lambda f: pd.read_excel(f, dtype=_text_column_dtypes()),
         # .xls
-        'application/vnd.ms-excel': lambda f: pd.read_excel(f),
+        'application/vnd.ms-excel': lambda f: pd.read_excel(f, dtype=_text_column_dtypes()),
         # .ods
-        'application/vnd.oasis.opendocument.spreadsheet': lambda f: pd.read_excel(f),
+        'application/vnd.oasis.opendocument.spreadsheet': lambda f: pd.read_excel(f, dtype=_text_column_dtypes()),
     }
 
     def __init__(self, user):
