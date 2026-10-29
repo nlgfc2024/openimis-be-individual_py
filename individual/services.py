@@ -30,7 +30,9 @@ from individual.utils import (
     fetch_summary_of_broken_items
 )
 from individual.enrolment_ranking import rank_and_cap_queryset
-from individual.enrollment_location import DISTRICT_FIELD, district_from_condition
+from individual.enrollment_location import (
+    DISTRICT_FIELD, check_district_access, district_from_condition, scoped_groups,
+)
 from individual.validation import (
     IndividualValidation,
     IndividualDataSourceValidation,
@@ -239,14 +241,18 @@ def build_individual_enrollment_queryset(custom_filters, benefit_plan_id, status
     return query.filter(~Q(pk__in=Subquery(subquery))).distinct()
 
 
-def build_group_enrollment_queryset(custom_filters, benefit_plan_id, status):
+def build_group_enrollment_queryset(custom_filters, benefit_plan_id, status, user):
     filters = merge_mandatory_enrolment_criteria(
         custom_filters,
         benefit_plan_id,
         status,
         "GROUP",
     )
-    query = Group.objects.filter(is_deleted=False)
+    query = scoped_groups(Group.objects.filter(is_deleted=False), user)
+    for condition in filters:
+        district = district_from_condition(condition)
+        if district is not None:
+            check_district_access(district, user)
     return CustomFilterWizardStorage.build_custom_filters_queryset(
         "individual",
         "Group",
@@ -303,7 +309,7 @@ def build_group_enrollment_selection(
     materialize_selected_ids=True,
 ):
     benefit_plan = _load_enrollment_benefit_plan(benefit_plan_id, status, "GROUP")
-    eligible = build_group_enrollment_queryset(custom_filters, benefit_plan_id, status)
+    eligible = build_group_enrollment_queryset(custom_filters, benefit_plan_id, status, user)
     from social_protection.models import GroupBeneficiary
     active_assignment = GroupBeneficiary.objects.filter(
         group_id=OuterRef("pk"),

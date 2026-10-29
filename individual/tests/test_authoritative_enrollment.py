@@ -381,6 +381,7 @@ class AuthoritativeEnrollmentTest(TestCase):
             custom_filters=[],
             benefit_plan_id=str(benefit_plan.id),
             status="ACTIVE",
+            user=self.user,
         )
 
         selected_ids = set(result.values_list("id", flat=True))
@@ -416,6 +417,7 @@ class AuthoritativeEnrollmentTest(TestCase):
             custom_filters=[],
             benefit_plan_id=str(benefit_plan.id),
             status="POTENTIAL",
+            user=self.user,
         )
 
         self.assertEqual(set(result.values_list("id", flat=True)), {eligible.id})
@@ -426,6 +428,7 @@ class AuthoritativeEnrollmentTest(TestCase):
             ],
             benefit_plan_id=str(benefit_plan.id),
             status="POTENTIAL",
+            user=self.user,
         )
         self.assertFalse(attempted_replacement.exists())
 

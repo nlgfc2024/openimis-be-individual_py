@@ -1,9 +1,11 @@
 """Reserved household enrollment filters over the actual location relationship."""
 import re
 
-from django.core.exceptions import ValidationError
+from django.conf import settings
+from django.core.exceptions import PermissionDenied, ValidationError
 
-from location.models import Location
+from core.models import InteractiveUser
+from location.models import Location, LocationManager, extend_allowed_locations
 
 
 DISTRICT_FIELD = "district_id"
@@ -30,3 +32,34 @@ def district_from_condition(condition):
     if district is None:
         raise ValidationError("Select an active District (R).")
     return district
+
+
+def scoped_groups(query, user):
+    """Use the household search access policy, including its missing-location rule."""
+    if user is None or user.is_anonymous:
+        raise PermissionDenied("An authenticated user is required for household enrollment.")
+    return query.model.get_queryset(query, user)
+
+
+def district_location_ids(district):
+    # Strict expansion goes down only: ancestors must not bring in sibling districts.
+    return Location.objects.filter(
+        id__in=extend_allowed_locations([district.id], strict=True),
+        *Location.filter_validity(),
+    ).values_list("id", flat=True)
+
+
+def check_district_access(district, user):
+    if user is None or user.is_anonymous:
+        raise PermissionDenied("An authenticated user is required for household enrollment.")
+    if not settings.ROW_SECURITY or user.is_imis_admin:
+        return
+    interactive_user = getattr(user, "_u", user)
+    # Match Group.get_queryset's existing technical-user policy.
+    if not isinstance(interactive_user, InteractiveUser) or interactive_user.is_superuser:
+        return
+    allowed = extend_allowed_locations(
+        LocationManager().get_allowed_ids(interactive_user), strict=True
+    )
+    if not district_location_ids(district).filter(id__in=allowed).exists():
+        raise PermissionDenied("The selected district is outside your permitted locations.")

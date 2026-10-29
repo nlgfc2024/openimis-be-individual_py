@@ -107,6 +107,19 @@ class GroupCustomFilterWizard(IndividualCustomFilterWizard):
 
     OBJECT_CLASS = Group
 
+    def apply_filter_to_queryset(self, custom_filters, query, relation=None):
+        from individual.enrollment_location import district_from_condition, district_location_ids
+
+        remaining = []
+        for condition in custom_filters:
+            district = district_from_condition(condition)
+            if district is None:
+                remaining.append(condition)
+            else:
+                field = f"{relation}__location_id__in" if relation else "location_id__in"
+                query = query.filter(**{field: district_location_ids(district)})
+        return super().apply_filter_to_queryset(remaining, query, relation)
+
     def load_definition(self, tuple_type, **kwargs):
         definitions = super().load_definition(tuple_type, **kwargs)
         return [
