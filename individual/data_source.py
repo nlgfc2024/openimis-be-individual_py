@@ -1,6 +1,8 @@
 import json
 
-from django.db.models import Q
+from django.db.models import Q, TextField, Value
+from django.db.models.fields.json import KeyTextTransform
+from django.db.models.functions import Coalesce, NullIf
 
 DATA_SOURCE_FIELD = "data_source"
 DEFAULT_DATA_SOURCE = "ubr"
@@ -21,11 +23,16 @@ def benefit_plan_data_source(benefit_plan):
 
 
 def data_source_q(data_source):
-    """Records of data_source; the default source also owns untagged records."""
     tagged = Q(**{f"json_ext__{DATA_SOURCE_FIELD}": data_source})
     if data_source == DEFAULT_DATA_SOURCE:
-        return tagged | ~Q(json_ext__has_key=DATA_SOURCE_FIELD)
+        return (tagged | ~Q(json_ext__has_key=DATA_SOURCE_FIELD)
+                | Q(**{f"json_ext__{DATA_SOURCE_FIELD}": None}) | Q(**{f"json_ext__{DATA_SOURCE_FIELD}": ""}))
     return tagged
+
+
+def data_source_expression():
+    return Coalesce(NullIf(KeyTextTransform(DATA_SOURCE_FIELD, "json_ext"), Value("")), Value(DEFAULT_DATA_SOURCE),
+                    output_field=TextField())
 
 
 def record_data_source(record):
