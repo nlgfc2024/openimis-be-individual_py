@@ -61,7 +61,7 @@ class DataSourceRecordsTest(TestCase):
     def test_blank_tags_belong_to_the_default_source(self):
         # Blank import cells arrive as JSON null or ""; both resolve to the default source
         blanks = [create_individual(self.user.username, {"json_ext": {"data_source": value}}) for value in (None, "")]
-        bare = create_individual(self.user.username, {"json_ext": None})
+        bare = create_individual(self.user.username, {"json_ext": {}})
         ids = {record.id for record in blanks + [bare]}
 
         self.assertEqual({record_data_source(record) for record in blanks + [bare]}, {"ubr"})
