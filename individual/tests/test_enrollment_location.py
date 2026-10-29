@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 
 from individual.custom_filters import GroupCustomFilterWizard, IndividualCustomFilterWizard
 from individual.enrollment_location import district_from_condition
@@ -12,7 +12,7 @@ from individual.services import _validate_operator_filters
 from core.test_helpers import LogInHelper, create_manager_role, create_test_interactive_user, create_test_language
 from individual.models import Group
 from individual.services import build_group_enrollment_queryset
-from individual.tests.test_helpers import create_group
+from individual.tests.test_helpers import create_group, create_sp_role
 from location.models import Location, UserDistrict, cache, free_cache_for_user
 from social_protection.tests.test_helpers import create_benefit_plan
 
@@ -72,7 +72,7 @@ class DistrictEnrollmentQueryTest(TestCase):
         self.admin = LogInHelper().get_or_create_user_api()
         self.user = create_test_interactive_user(
             username="enrollment-district-user", password="Test-only-123!",
-            roles=[create_manager_role().id],
+            roles=[create_sp_role(self.admin).id],
         )
         self.a = self.location("R", "ENR-A")
         self.b = self.location("R", "ENR-B")
@@ -148,3 +148,62 @@ class DistrictEnrollmentQueryTest(TestCase):
         Location.objects.filter(pk=self.b.pk).update(validity_to=timezone.now())
         with self.assertRaises(ValidationError):
             self.query(self.b)
+
+    def test_graphql_summary_and_preview_share_scope(self):
+        import graphene
+        from individual.schema import Query
+        from individual.services import build_group_enrollment_selection
+        schema = graphene.Schema(query=Query)
+        context = RequestFactory().get("/graphql")
+        context.user = self.user
+        query = '''query($plan: String!, $filters: [String]) {
+          groupEnrollmentSummary(benefitPlanId: $plan, status: "ACTIVE", customFilters: $filters) {
+            numberOfSelectedGroups totalNumberOfGroups willEnrol
+          }
+          group(benefitPlanToEnroll: $plan, enrollmentPreviewStatus: "ACTIVE", customFilters: $filters) {
+            edges { node { uuid } }
+          }
+        }'''
+        for filters in (self.conditions(self.a), []):
+            result = schema.execute(query, variable_values={"plan": str(self.plan.id), "filters": filters}, context_value=context)
+            self.assertFalse(result.errors, result.errors)
+            selection = build_group_enrollment_selection(filters, str(self.plan.id), "ACTIVE", self.user)
+            expected = selection["groups_not_assigned_to_selected_programme"]
+            self.assertEqual({x["node"]["uuid"] for x in result.data["group"]["edges"]},
+                             {str(x.uuid) for x in expected})
+            summary = result.data["groupEnrollmentSummary"]
+            self.assertEqual(summary["willEnrol"], expected.count())
+            self.assertEqual(int(summary["totalNumberOfGroups"]), Group.get_queryset(Group.objects.filter(is_deleted=False), self.user).count())
+        rejected = schema.execute(query, variable_values={"plan": str(self.plan.id), "filters": self.conditions(self.b)}, context_value=context)
+        self.assertTrue(rejected.errors)
+
+    def test_confirmation_recomputes_verified_eligibility_and_retains_scope(self):
+        from individual.gql_mutations import ConfirmGroupEnrollmentMutation
+        from individual.models import GroupIndividual
+        from individual.tests.test_helpers import create_individual
+        from social_protection.apps import SocialProtectionConfig
+        from social_protection.models import GroupBeneficiary
+        for group in (self.selected, self.other):
+            head = create_individual(self.admin.username, {
+                "location": group.location, "json_ext": {"validation_status": "VERIFIED"}
+            })
+            GroupIndividual(group=group, individual=head, role=GroupIndividual.Role.HEAD).save(username=self.admin.username)
+        self.assertTrue(self.query(self.a).filter(pk=self.selected.pk).exists())
+        with patch.object(SocialProtectionConfig, "enable_maker_checker_logic_enrollment", False):
+            Group.objects.filter(pk=self.selected.pk).update(json_ext={"validation_status": "PENDING"})
+            ConfirmGroupEnrollmentMutation._mutate(self.user, custom_filters=self.conditions(self.a), benefit_plan_id=str(self.plan.id), status="ACTIVE")
+            self.assertFalse(GroupBeneficiary.objects.filter(benefit_plan=self.plan).exists())
+            Group.objects.filter(pk=self.selected.pk).update(json_ext={"validation_status": "VERIFIED"})
+            ConfirmGroupEnrollmentMutation._mutate(self.user, custom_filters=self.conditions(self.a), benefit_plan_id=str(self.plan.id), status="ACTIVE")
+            self.assertEqual(set(GroupBeneficiary.objects.filter(benefit_plan=self.plan).values_list("group_id", flat=True)), {self.selected.id})
+
+    def test_capacity_is_phase_wide_and_district_filter_does_not_reset_it(self):
+        from social_protection.models import GroupBeneficiary
+        from individual.services import build_group_enrollment_selection
+        self.plan.max_beneficiaries = 1
+        self.plan.json_ext["enrolment_ranking"] = {"ACTIVE": {"order_by": ["id"], "limit": {"percentage": 100}}}
+        self.plan.save(username=self.admin.username)
+        GroupBeneficiary(group=self.other, benefit_plan=self.plan, status="ACTIVE").save(username=self.admin.username)
+        selected = build_group_enrollment_selection(self.conditions(self.a), str(self.plan.id), "ACTIVE", self.user)
+        self.assertEqual(selected["pool_size"], 1)
+        self.assertEqual(selected["will_enrol"], 0)

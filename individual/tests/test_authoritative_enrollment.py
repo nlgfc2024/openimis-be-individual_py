@@ -5,7 +5,7 @@ from django.core.exceptions import ValidationError
 from django.db import DataError
 from django.test import SimpleTestCase, TestCase
 
-from core.test_helpers import LogInHelper
+from core.test_helpers import LogInHelper, create_test_language
 from individual.services import (
     IndividualService,
     _criterion_to_condition,
@@ -25,9 +25,19 @@ from individual.models import Individual
 from individual.schema import Query
 from individual.custom_filters import GroupCustomFilterWizard, IndividualCustomFilterWizard
 from individual.tests.test_helpers import create_group, create_individual
-from social_protection.tests.test_helpers import create_benefit_plan
+from social_protection.tests.test_helpers import create_benefit_plan as create_base_benefit_plan
 from social_protection.apps import SocialProtectionConfig
 from social_protection.models import Beneficiary, GroupBeneficiary
+
+
+def create_benefit_plan(username, payload_override=None):
+    # These tests own their criteria; the SP fixture also carries unrelated rules.
+    payload = copy.deepcopy(payload_override or {})
+    json_ext = payload.setdefault("json_ext", {})
+    criteria = json_ext.setdefault("advanced_criteria", {})
+    for status in ("POTENTIAL", "ACTIVE", "SUSPENDED", "GRADUATED"):
+        criteria.setdefault(status, [])
+    return create_base_benefit_plan(username, payload_override=payload)
 
 
 class EnrollmentCriterionNormalizationTest(SimpleTestCase):
@@ -267,6 +277,7 @@ class EnrollmentPreviewResolverTest(SimpleTestCase):
 class AuthoritativeEnrollmentTest(TestCase):
     @classmethod
     def setUpTestData(cls):
+        create_test_language(code="en")
         cls.user = LogInHelper().get_or_create_user_api()
 
     def setUp(self):
@@ -617,8 +628,8 @@ class AuthoritativeEnrollmentTest(TestCase):
 
     def test_individual_selection_only_excludes_active_assignment_for_requested_status(self):
         benefit_plan = self._benefit_plan("INDIVIDUAL")
-        active = create_individual(self.user.username)
-        other_status = create_individual(self.user.username)
+        active = create_individual(self.user.username, {"json_ext": {"validation_status": "VERIFIED"}})
+        other_status = create_individual(self.user.username, {"json_ext": {"validation_status": "VERIFIED"}})
 
         for individual, assignment_status in (
             (active, "ACTIVE"),

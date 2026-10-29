@@ -30,6 +30,7 @@ from individual.services import (
     build_group_enrollment_selection,
     build_individual_enrollment_selection,
 )
+from individual.enrollment_location import scoped_groups
 
 
 def patch_details(data_df: pd.DataFrame):
@@ -478,13 +479,16 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             custom_filters,
             benefit_plan_id,
             status,
+            info.context.user,
         )
         query = selection["group_query_with_filters"]
         # Aggregation for selected groups
         number_of_selected_groups = query.count()
 
         # Aggregation for total number of groups
-        total_number_of_groups = Group.objects.filter(is_deleted=False).count()
+        total_number_of_groups = scoped_groups(
+            Group.objects.filter(is_deleted=False), info.context.user
+        ).count()
         from social_protection.models import GroupBeneficiary
         active_assignment = GroupBeneficiary.objects.filter(
             group_id=OuterRef("pk"),
