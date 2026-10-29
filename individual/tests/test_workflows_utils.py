@@ -45,6 +45,14 @@ class TestBasePythonWorkflowExecutor(TestCase):
         except PythonWorkflowHandlerException:
             self.fail("validate_dataframe_headers() raised PythonWorkflowHandlerException unexpectedly!")
 
+    def test_validate_dataframe_headers_accepts_data_source_outside_schema(self):
+        self.executor.df = pd.DataFrame(columns=['first_name', 'last_name', 'dob', 'id', 'location_name',
+                                                 'location_code', 'data_source'])
+        try:
+            self.executor.validate_dataframe_headers()
+        except PythonWorkflowHandlerException:
+            self.fail("data_source is a system column and must not need to be in individual_schema")
+
     def test_validate_dataframe_headers_missing_required_fields(self):
         # DataFrame missing required 'first_name' column
         self.executor.df = pd.DataFrame(columns=['last_name', 'dob', 'id', 'location_name', 'location_code'])

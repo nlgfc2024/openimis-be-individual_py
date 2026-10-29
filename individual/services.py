@@ -16,6 +16,7 @@ from django.apps import apps
 # from django.utils.translation import gettext as _
 from django.db.models import Q, OuterRef, Subquery, Count, Exists
 from individual.apps import IndividualConfig
+from individual.data_source import DATA_SOURCE_FIELD
 from individual.models import (
     Individual,
     IndividualDataSource,
@@ -670,7 +671,11 @@ class GroupAndGroupIndividualAlignmentService:
 
         head_str = f'{head.individual.first_name} {head.individual.last_name}' if head else None
         head_id = str(head.individual.id) if head else None
-        head_json_ext = head.individual.json_ext if head and head.individual.json_ext else {}
+        # The household's data source is its own (set on import), never copied from or cleared by its head
+        head_json_ext = {
+            k: v for k, v in (head.individual.json_ext if head and head.individual.json_ext else {}).items()
+            if k != DATA_SOURCE_FIELD
+        }
 
         primary_str = f'{primary.individual.first_name} {primary.individual.last_name}' if primary else None
         primary_id = str(primary.individual.id) if primary else None
@@ -681,7 +686,7 @@ class GroupAndGroupIndividualAlignmentService:
         changes_to_save = {}
         json_ext_minus_keys = {k: v for k, v in group.json_ext.items() if k not in [
             "members", "head", "head_id", "primary_recipient",
-            "primary_recipient_id", "secondary_recipient", "secondary_recipient_id"
+            "primary_recipient_id", "secondary_recipient", "secondary_recipient_id", DATA_SOURCE_FIELD,
         ]}
 
         if json_ext_minus_keys != head_json_ext:
