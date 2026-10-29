@@ -8,7 +8,7 @@ Status: implementation planning only. This branch currently contains documentati
 - Feature branch: `feature/household-enrollment-district-filter`.
 - Assignee: @YutakaX17.
 - Requested reviewers: @mcleanka, @uniquedj95, @Lenwell89.
-- Target project: https://github.com/orgs/nlgfc2024/projects/12 (project membership pending authorization).
+- Target project: https://github.com/orgs/nlgfc2024/projects/12 (added; initial status: To Do).
 
 ## Behavior and shared contract
 
@@ -88,4 +88,14 @@ Backend and frontend module work must merge before assembly references are updat
 Check current enrollment refactors before implementation: backend PRs https://github.com/nlgfc2024/openimis-be-individual_py/pull/8, https://github.com/nlgfc2024/openimis-be-individual_py/pull/17 and https://github.com/nlgfc2024/openimis-be-individual_py/pull/18, and frontend PR https://github.com/nlgfc2024/openimis-fe-individual_js/pull/22. Rebase on current mw/develop and adapt paths if enrollment ownership moves; do not merge unrelated work into this feature merely to avoid resolving overlap.
 
 Keep commits separated by issue for reviewer navigation. Add new commits for review fixes where practical; no implementation issue is closed by the initial documentation commit. Before marking the feature ready, update the PR description to describe actual delivered behavior, actual validation, remaining risks, and completed issue links. Since mw/develop may not be the repository default branch, verify issue closure explicitly after implementation is merged rather than relying solely on automatic closing keywords.
+
+## Opened PRs
+
+- openimis-be-individual_py: https://github.com/nlgfc2024/openimis-be-individual_py/pull/22
+- openimis-fe-individual_js: https://github.com/nlgfc2024/openimis-fe-individual_js/pull/26
+- openimis-fe-core_js: https://github.com/nlgfc2024/openimis-fe-core_js/pull/26
+- openimis-be_py: https://github.com/nlgfc2024/openimis-be_py/pull/17
+- openimis-fe_js: https://github.com/nlgfc2024/openimis-fe_js/pull/11
+
+Initial mw/develop commit for this repository: `150d6518f31f6e87ad5bfad9cb4b0b4b3b607366`.
 
