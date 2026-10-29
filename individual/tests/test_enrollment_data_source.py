@@ -26,8 +26,8 @@ class EnrollmentDataSourceTest(TestCase):
         return create_benefit_plan(self.user.username, payload_override={"type": plan_type, "json_ext": json_ext})
 
     # The helper's default plan requires able_bodied=False for ACTIVE, so records meet it and only the source decides
-    def _individual(self, source_type=None):
-        json_ext = {"able_bodied": False, **({"source_type": source_type} if source_type else {})}
+    def _individual(self, data_source=None):
+        json_ext = {"able_bodied": False, **({"data_source": data_source} if data_source else {})}
         return create_individual(self.user.username, {"json_ext": json_ext})
 
     def _eligible_individuals(self, plan):
@@ -52,7 +52,7 @@ class EnrollmentDataSourceTest(TestCase):
         # Same code in both sources: households are told apart by their tag, not their code
         msr_group = create_group(self.user.username, {"code": "30874398", "json_ext": {"able_bodied": False}})
         pwp_group = create_group(self.user.username, {
-            "code": "30874398", "json_ext": {"able_bodied": False, "source_type": "pwp"},
+            "code": "30874398", "json_ext": {"able_bodied": False, "data_source": "pwp"},
         })
 
         self.assertEqual(self._eligible_groups(self._plan("GROUP", "pwp")), {pwp_group.id})
