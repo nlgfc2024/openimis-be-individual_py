@@ -19,7 +19,7 @@ class DataSourceHelpersTest(SimpleTestCase):
         self.assertEqual(benefit_plan_data_source(plan), "pwp")
 
     def test_record_source_is_its_tag_or_the_default(self):
-        self.assertEqual(record_data_source(SimpleNamespace(json_ext={"source_type": "sctp"})), "sctp")
+        self.assertEqual(record_data_source(SimpleNamespace(json_ext={"data_source": "sctp"})), "sctp")
         self.assertEqual(record_data_source(SimpleNamespace(json_ext=None)), "ubr")
 
 
@@ -28,21 +28,21 @@ class DataSourceRecordsTest(TestCase):
     def setUpTestData(cls):
         cls.user = LogInHelper().get_or_create_user_api()
 
-    def _individual(self, source_type=None):
-        json_ext = {"source_type": source_type} if source_type else {}
+    def _individual(self, data_source=None):
+        json_ext = {"data_source": data_source} if data_source else {}
         return create_individual(self.user.username, {"json_ext": json_ext})
 
     def test_household_keeps_its_source_through_head_changes(self):
         # Saving a membership re-copies the household's json_ext from its head
-        group = create_group(self.user.username, {"code": "47407473", "json_ext": {"source_type": "sctp"}})
+        group = create_group(self.user.username, {"code": "47407473", "json_ext": {"data_source": "sctp"}})
         GroupIndividual(group=group, individual=self._individual("sctp"), role=None).save(username=self.user.username)
         group.refresh_from_db()
-        self.assertEqual(group.json_ext["source_type"], "sctp")  # no head
+        self.assertEqual(group.json_ext["data_source"], "sctp")  # no head
 
         head = self._individual("ubr")  # a head tagged otherwise must not overwrite it
         GroupIndividual(group=group, individual=head, role=GroupIndividual.Role.HEAD).save(username=self.user.username)
         group.refresh_from_db()
-        self.assertEqual(group.json_ext["source_type"], "sctp")
+        self.assertEqual(group.json_ext["data_source"], "sctp")
 
     def test_data_source_q_matches_untagged_only_for_default(self):
         untagged, pwp = self._individual(), self._individual("pwp")
