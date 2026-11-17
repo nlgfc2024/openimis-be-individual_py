@@ -50,6 +50,24 @@ class TestView(APITestCase):
             f'Expect csv template header to contain {expected_base_csv_header}, but got {content}'
         )
 
+    def test_download_kyc_details_template_file(self):
+        response = self.client.get(
+            self.download_url,
+            {"workflow_name": "Python KYC Details"},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn(
+            'attachment; filename="individual_kyc_details_template.csv"',
+            response['Content-Disposition'],
+        )
+        content = b"".join(response.streaming_content).decode('utf-8')
+        self.assertEqual(
+            content.splitlines()[0],
+            "form_number,district,ta,gvh,village,catchment,first_name,last_name,nid,"
+            "account_number,account_name,bank",
+        )
+
     def test_download_template_file_on_individual_schema_update(self):
         # First set the individual config to be empty
         config = ModuleConfiguration.objects.filter(module='individual', layer='be')
@@ -109,6 +127,38 @@ class TestView(APITestCase):
         self.assertIn('message', response.data)
 
         mock_handler_instance.save_file.assert_called_once()
+
+    @patch('individual.views._remove_file')
+    @patch('individual.views.WorkflowService.get_workflows')
+    @patch('individual.views.IndividualImportService.import_individuals')
+    @patch('individual.views.DefaultStorageFileHandler')
+    def test_import_individuals_workflow_failure_returns_error_details(
+            self, mock_file_handler, mock_import, mock_get_workflows, mock_remove_file):
+        mock_get_workflows.return_value = {
+            'success': True,
+            'data': {'workflows': [{'id': 1, 'name': 'Test Workflow'}]},
+        }
+        mock_import.return_value = {
+            'success': False,
+            'message': 'The upload workflow failed.',
+            'error': {'workflow': 'KYC upload is missing required columns: bank.'},
+            'data': {'upload_uuid': 'upload-uuid', 'status': 'FAIL'},
+        }
+
+        with open(self.test_file_path, 'rb') as test_file:
+            response = self.client.post(
+                self.upload_url,
+                data={**self.upload_data, 'file': test_file},
+                format='multipart',
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            response.data['error']['workflow'],
+            'KYC upload is missing required columns: bank.',
+        )
+        mock_file_handler.return_value.save_file.assert_called_once()
+        mock_remove_file.assert_not_called()
 
     @patch('individual.views.WorkflowService.get_workflows')
     @patch('individual.views.IndividualImportService.import_individuals')

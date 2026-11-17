@@ -3,7 +3,8 @@ import graphene
 import graphene_django_optimizer as gql_optimizer
 import pandas as pd
 from django.contrib.auth.models import AnonymousUser
-from django.db.models import Q, OuterRef, Subquery
+from django.db.models import Q, OuterRef, Subquery, Value
+from django.db.models.functions import Concat
 
 from core.custom_filters import CustomFilterWizardStorage
 from core.gql.export_mixin import ExportableQueryMixin
@@ -23,6 +24,12 @@ from individual.gql_queries import IndividualGQLType, IndividualHistoryGQLType, 
 from individual.models import Individual, IndividualDataSource, Group, \
     GroupIndividual, IndividualDataSourceUpload, IndividualDataUploadRecords, GroupDataSource
 from location.apps import LocationConfig
+from location.models import (
+    HotspotVillage,
+    MicroCatchmentGVH,
+    MicroCatchmentTA,
+)
+from social_protection.models import BenefitPlan
 
 
 def patch_details(data_df: pd.DataFrame):
@@ -63,6 +70,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
         customFilters=graphene.List(of_type=graphene.String),
         benefitPlanId=graphene.String(),
         filterNotAttachedToGroup=graphene.Boolean(),
+        primary_recipient_only=graphene.Boolean(),
         parent_location=graphene.String(),
         parent_location_level=graphene.Int(),
     )
@@ -108,6 +116,14 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
         customFilters=graphene.List(of_type=graphene.String),
         parent_location=graphene.String(),
         parent_location_level=graphene.Int(),
+        name=graphene.String(),
+        validation_status=graphene.String(),
+        sector=graphene.String(),
+        micro_catchment_uuid=graphene.String(),
+        hotspot_id=graphene.Int(),
+        benefitPlanId=graphene.String(),
+        primary_recipient_only=graphene.Boolean(),
+        include_primary_recipient_data=graphene.Boolean(),
     )
 
     group_history = OrderedDjangoFilterConnectionField(
@@ -176,6 +192,13 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             ).values('individual')
             filters.append(~Q(pk__in=Subquery(subquery)))
 
+        primary_recipient_only = kwargs.get("primary_recipient_only", False)
+        if primary_recipient_only:
+            filters.append(Q(
+                groupindividuals__recipient_type=GroupIndividual.RecipientType.PRIMARY,
+                groupindividuals__is_deleted=False,
+            ))
+
         parent_location = kwargs.get('parent_location')
         parent_location_level = kwargs.get('parent_location_level')
         if parent_location is not None and parent_location_level is not None:
@@ -183,6 +206,18 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
 
         query = IndividualGQLType.get_queryset(None, info)
         query = query.filter(*filters)
+        if primary_recipient_only:
+            catchment_query = MicroCatchmentGVH.objects.filter(
+                location_id=OuterRef("location__parent_id"),
+            ).filter(*MicroCatchmentGVH.filter_validity())
+            query = query.annotate(
+                kyc_catchment=Subquery(
+                    catchment_query.order_by(
+                        "micro_catchment__name",
+                        "micro_catchment_id",
+                    ).values("micro_catchment__name")[:1]
+                )
+            ).distinct()
 
         custom_filters = kwargs.get("customFilters", None)
         if custom_filters:
@@ -266,6 +301,81 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
         if last_name:
             filters.append(Q(groupindividuals__individual__last_name__icontains=last_name))
 
+        name = kwargs.get("name")
+        if name:
+            filters.append(
+                Q(code__icontains=name)
+                | Q(json_ext__form_number__icontains=name)
+                | Q(groupindividuals__individual__first_name__icontains=name)
+                | Q(groupindividuals__individual__last_name__icontains=name)
+            )
+
+        validation_status = kwargs.get("validation_status")
+        if validation_status:
+            filters.append(Q(json_ext__validation_status__iexact=validation_status))
+
+        sector = kwargs.get("sector")
+        if sector:
+            filters.append(
+                Q(json_ext__sector__icontains=sector)
+                | Q(
+                    groupindividuals__is_deleted=False,
+                    groupindividuals__recipient_type=GroupIndividual.RecipientType.PRIMARY,
+                    groupindividuals__individual__json_ext__sector__icontains=sector,
+                )
+            )
+
+        micro_catchment_uuid = kwargs.get("micro_catchment_uuid")
+        if micro_catchment_uuid:
+            gvh_ids = MicroCatchmentGVH.objects.filter(
+                micro_catchment__uuid=micro_catchment_uuid,
+                validity_to__isnull=True,
+                micro_catchment__validity_to__isnull=True,
+            ).values("location_id")
+            ta_ids = MicroCatchmentTA.objects.filter(
+                micro_catchment__uuid=micro_catchment_uuid,
+                validity_to__isnull=True,
+                micro_catchment__validity_to__isnull=True,
+            ).values("location_id")
+            filters.append(
+                Q(location_id__in=gvh_ids)
+                | Q(location__parent_id__in=gvh_ids)
+                | Q(location_id__in=ta_ids)
+                | Q(location__parent_id__in=ta_ids)
+                | Q(location__parent__parent_id__in=ta_ids)
+            )
+
+        hotspot_id = kwargs.get("hotspot_id")
+        if hotspot_id:
+            hotspot_village_ids = HotspotVillage.objects.filter(
+                hotspot_id=hotspot_id,
+                validity_to__isnull=True,
+                hotspot__validity_to__isnull=True,
+            ).values("location_id")
+            filters.append(Q(location_id__in=hotspot_village_ids))
+
+        if kwargs.get("primary_recipient_only"):
+            filters.append(Q(
+                groupindividuals__recipient_type=GroupIndividual.RecipientType.PRIMARY,
+                groupindividuals__is_deleted=False,
+            ))
+
+        benefit_plan_id = kwargs.get("benefitPlanId")
+        if benefit_plan_id:
+            beneficiary_filters = Q(
+                groupbeneficiary__benefit_plan_id=benefit_plan_id,
+                groupbeneficiary__is_deleted=False,
+            )
+            if kwargs.get("primary_recipient_only"):
+                # KYC payment exports select a Phase and must contain only
+                # verified households that are active beneficiaries of it.
+                # Without these constraints, potential/old Phase links were
+                # exported as well, making the workbook larger than the Phase
+                # beneficiary count.
+                beneficiary_filters &= Q(groupbeneficiary__status="ACTIVE")
+                beneficiary_filters &= Q(json_ext__validation_status__iexact="VERIFIED")
+            filters.append(beneficiary_filters)
+
         parent_location = kwargs.get('parent_location')
         parent_location_level = kwargs.get('parent_location_level')
         if parent_location is not None and parent_location_level is not None:
@@ -273,6 +383,54 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
 
         query = GroupGQLType.get_queryset(None, info)
         query = query.filter(*filters).distinct()
+        if benefit_plan_id and kwargs.get("primary_recipient_only"):
+            phase_name_query = BenefitPlan.objects.filter(
+                id=benefit_plan_id,
+                is_deleted=False,
+            ).annotate(
+                export_phase_name=Concat("code", Value(" "), "name"),
+            ).values("export_phase_name")[:1]
+            query = query.annotate(kyc_phase=Subquery(phase_name_query))
+        if kwargs.get("include_primary_recipient_data"):
+            primary_recipient_query = GroupIndividual.objects.filter(
+                group_id=OuterRef("pk"),
+                recipient_type=GroupIndividual.RecipientType.PRIMARY,
+                is_deleted=False,
+            ).order_by("id")
+            catchment_query = primary_recipient_query.annotate(
+                primary_catchment=Subquery(
+                    MicroCatchmentGVH.objects.filter(
+                        location_id=OuterRef("individual__location__parent_id"),
+                    ).filter(*MicroCatchmentGVH.filter_validity()).order_by(
+                        "micro_catchment__name",
+                        "micro_catchment_id",
+                    ).values("micro_catchment__name")[:1]
+                )
+            ).values("primary_catchment")[:1]
+            query = query.annotate(
+                kyc_catchment=Subquery(catchment_query),
+                primary_recipient_first_name=Subquery(
+                    primary_recipient_query.values("individual__first_name")[:1]
+                ),
+                primary_recipient_last_name=Subquery(
+                    primary_recipient_query.values("individual__last_name")[:1]
+                ),
+                primary_recipient_dob=Subquery(
+                    primary_recipient_query.values("individual__dob")[:1]
+                ),
+                primary_recipient_national_id=Subquery(
+                    primary_recipient_query.values("individual__json_ext__national_id")[:1]
+                ),
+                primary_recipient_account_number=Subquery(
+                    primary_recipient_query.values("individual__json_ext__account_number")[:1]
+                ),
+                primary_recipient_account_name=Subquery(
+                    primary_recipient_query.values("individual__json_ext__account_name")[:1]
+                ),
+                primary_recipient_bank=Subquery(
+                    primary_recipient_query.values("individual__json_ext__bank")[:1]
+                ),
+            )
 
         custom_filters = kwargs.get("customFilters", None)
         if custom_filters:

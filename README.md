@@ -72,8 +72,13 @@ They should be used for the development purposes, not in production environment.
 To activate these Python workflows, a configuration change is required. 
 Specifically, the `enable_python_workflows` parameter to `true` within module config.
 
-Workflows: 
+Workflows:
  * individual upload
+ * individual update
+ * KYC details update (uses the individual update validation and approval flow;
+   accepts form_number, nid, first_name, last_name, account_number,
+   account_name, bank, and optional district/ta/gvh/village/catchment context;
+   the upload dialog's Template button provides the matching CSV template)
 
 
 ## Additional Field Definition

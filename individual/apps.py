@@ -33,6 +33,11 @@ DEFAULT_CONFIG = {
             "educated_level": {"type": "string"},
             "chronic_illness": {"type": "boolean"},
             "national_id_type": {"type": "string"},
+            "form_number": {"type": "string"},
+            "nid": {"type": "string"},
+            "account_number": {"type": "string"},
+            "account_name": {"type": "string"},
+            "bank": {"type": "string"},
             "number_of_elderly": {"type": "integer"},
             "number_of_children": {"type": "integer"},
             "beneficiary_data_source": {"type": "string"}
@@ -180,7 +185,9 @@ class IndividualConfig(AppConfig):
 
     def _set_up_workflows(self):
         from workflow.systems.python import PythonWorkflowAdaptor
+        from individual.data_source import KYC_DETAILS_WORKFLOW_NAME
         from individual.workflows import process_import_individuals_workflow, \
+            process_kyc_details_workflow, \
             process_update_valid_individuals_workflow, \
             process_import_valid_individuals_workflow, \
             process_update_individuals_workflow
@@ -195,6 +202,11 @@ class IndividualConfig(AppConfig):
                 'Python Update Individuals',
                 'individual',
                 process_update_individuals_workflow
+            )
+            PythonWorkflowAdaptor.register_workflow(
+                KYC_DETAILS_WORKFLOW_NAME,
+                'individual',
+                process_kyc_details_workflow
             )
             PythonWorkflowAdaptor.register_workflow(
                 'Python Valid Upload Individuals',

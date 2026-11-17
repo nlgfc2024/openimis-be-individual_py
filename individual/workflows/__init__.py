@@ -1,6 +1,9 @@
 # flake8: noqa
 from individual.workflows.example_import_individual_workflow import example_import_individual_workflow
 from individual.workflows.base_individual_upload import process_import_individuals_workflow
-from individual.workflows.base_individual_update import process_update_individuals_workflow
+from individual.workflows.base_individual_update import (
+    process_kyc_details_workflow,
+    process_update_individuals_workflow,
+)
 from individual.workflows.individual_update_valid import process_update_valid_individuals_workflow
 from individual.workflows.individual_upload_valid import process_import_valid_individuals_workflow

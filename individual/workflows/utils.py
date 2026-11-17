@@ -6,11 +6,17 @@ import logging
 from abc import ABCMeta, abstractmethod
 from typing import Iterable
 
+import pandas as pd
 from django.db import ProgrammingError, connection
 
 from core.models import User
 from individual.apps import IndividualConfig
-from individual.data_source import DATA_SOURCE_FIELD
+from individual.data_source import (
+    DATA_SOURCE_FIELD,
+    PAYMENT_DETAILS_FIELDS,
+    PAYMENT_DETAILS_REQUIRED_COLUMNS,
+    has_payment_details_columns,
+)
 from individual.models import IndividualDataSource
 from individual.services import IndividualImportService
 from individual.utils import load_dataframe
@@ -52,8 +58,26 @@ class BasePythonWorkflowExecutor(metaclass=ABCMeta):
         """
         df_headers = set(self.df.columns)
         schema_properties = set(self.schema.get('properties', {}).keys())
+        schema_properties.update(PAYMENT_DETAILS_REQUIRED_COLUMNS)
         schema_properties.update(['recipient_info', 'group_code', 'individual_role', DATA_SOURCE_FIELD])
-        required_headers = set(IndividualConfig.individual_base_fields)
+        payment_details_update = has_payment_details_columns(df_headers) and any(
+            self.df[field].map(
+                lambda value: value is not None and not pd.isna(value) and bool(str(value).strip())
+            ).any()
+            for field in PAYMENT_DETAILS_FIELDS
+            if field in df_headers
+        )
+        if payment_details_update and not is_update:
+            raise PythonWorkflowHandlerException(
+                "Payment details can only be uploaded through the individual update workflow."
+            )
+
+        if payment_details_update:
+            required_headers = set(IndividualConfig.individual_base_fields)
+            required_headers.update(PAYMENT_DETAILS_REQUIRED_COLUMNS)
+            required_headers.add('ID')
+        else:
+            required_headers = set(IndividualConfig.individual_base_fields)
         if is_update:
             required_headers.add('ID')
 
@@ -170,9 +194,15 @@ class DataUploadWorkflow(MakerCheckerPythonWorkflowExecutor):
 
 class DataUpdateWorkflow(MakerCheckerPythonWorkflowExecutor):
 
-    def __init__(self, upload_uuid, user_uuid, import_service=IndividualImportService):
+    def __init__(
+            self,
+            upload_uuid,
+            user_uuid,
+            import_service=IndividualImportService,
+            require_approval=False):
         super().__init__(upload_uuid, user_uuid)
         self.import_service = import_service(self.user)
+        self.require_approval = require_approval
 
     @property
     def should_create_task(self):
@@ -180,7 +210,14 @@ class DataUpdateWorkflow(MakerCheckerPythonWorkflowExecutor):
             upload_id=self.upload_uuid,
             individual_sources=IndividualDataSource.objects.filter(upload_id=self.upload_uuid)
         )
+        self.import_service.validate_payment_details_upload(self.upload_uuid)
         return validation_response['summary_invalid_items'] or True  # Replace this with config check
 
     def _create_task_function(self):
-        self.import_service.create_task_with_update_valid_items(self.upload_uuid)
+        if self.require_approval:
+            self.import_service.create_task_with_update_valid_items(
+                self.upload_uuid,
+                force_maker_checker=True,
+            )
+        else:
+            self.import_service.create_task_with_update_valid_items(self.upload_uuid)

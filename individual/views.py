@@ -16,6 +16,11 @@ from rest_framework.response import Response
 from core.utils import DefaultStorageFileHandler
 from core.views import check_user_rights
 from individual.apps import IndividualConfig
+from individual.data_source import (
+    KYC_DETAILS_WORKFLOW_NAME,
+    PAYMENT_DETAILS_REQUIRED_COLUMNS,
+    PAYMENT_DETAILS_TEMPLATE_COLUMNS,
+)
 from individual.models import IndividualDataSource
 from individual.services import IndividualImportService
 
@@ -58,6 +63,7 @@ def get_global_schema_fields():
     schema = json.loads(IndividualConfig.individual_schema)
     # Extract property keys and add additional fields specific to individuals
     schema_properties = set(schema.get('properties', {}).keys())
+    schema_properties.update(PAYMENT_DETAILS_REQUIRED_COLUMNS)
     schema_properties.update(['recipient_info', 'individual_role', 'group_code'])
     return list(schema_properties)
 
@@ -67,10 +73,12 @@ def get_global_schema_fields():
 @permission_classes([check_user_rights(IndividualConfig.gql_individual_create_perms)])
 def download_template_file(request):
     try:
-        # Base fields and extra fields required in the template
-        base_fields = IndividualConfig.individual_base_fields
-        extra_fields = get_global_schema_fields()
-        all_fields = list(dict.fromkeys(base_fields + extra_fields))
+        if request.query_params.get("workflow_name") == KYC_DETAILS_WORKFLOW_NAME:
+            all_fields = PAYMENT_DETAILS_TEMPLATE_COLUMNS
+        else:
+            base_fields = IndividualConfig.individual_base_fields
+            extra_fields = get_global_schema_fields()
+            all_fields = list(dict.fromkeys(base_fields + extra_fields))
 
         # Create an empty DataFrame with the required fields
         template_df = pd.DataFrame(columns=all_fields)
@@ -84,7 +92,12 @@ def download_template_file(request):
         response = StreamingHttpResponse(
             stream_csv(), content_type='text/csv'
         )
-        response['Content-Disposition'] = 'attachment; filename="individual_upload_template.csv"'
+        template_name = (
+            "individual_kyc_details_template.csv"
+            if request.query_params.get("workflow_name") == KYC_DETAILS_WORKFLOW_NAME
+            else "individual_upload_template.csv"
+        )
+        response['Content-Disposition'] = f'attachment; filename="{template_name}"'
         return response
     except Exception as exc:
         # Log unexpected errors and return a 500 response
@@ -110,9 +123,9 @@ def import_individuals(request):
         # Import individual data using the service
         result = IndividualImportService(user).import_individuals(import_file, workflow, group_aggregation_column)
 
-        # If the import was unsuccessful, raise an error
+        # Preserve the uploaded file and return workflow diagnostics for the upload history.
         if not result.get('success'):
-            raise ValueError('{}: {}'.format(result.get("message"), result.get("details")))
+            return Response(result, status=status.HTTP_400_BAD_REQUEST)
 
         # Return the result of the import
         return Response(result)

@@ -120,6 +120,8 @@ class IndividualDataSourceGQLType(DjangoObjectType):
 class GroupGQLType(DjangoObjectType):
     uuid = graphene.String(source='uuid')
     head = graphene.Field(IndividualGQLType)
+    # Populated only for the Phase-scoped KYC export.
+    kyc_phase = graphene.String()
 
     def resolve_head(self, info):
         return Individual.objects.filter(
