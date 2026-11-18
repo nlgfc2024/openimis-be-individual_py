@@ -33,11 +33,6 @@ DEFAULT_CONFIG = {
             "educated_level": {"type": "string"},
             "chronic_illness": {"type": "boolean"},
             "national_id_type": {"type": "string"},
-            "form_number": {"type": "string"},
-            "nid": {"type": "string"},
-            "account_number": {"type": "string"},
-            "account_name": {"type": "string"},
-            "bank": {"type": "string"},
             "number_of_elderly": {"type": "integer"},
             "number_of_children": {"type": "integer"},
             "beneficiary_data_source": {"type": "string"}

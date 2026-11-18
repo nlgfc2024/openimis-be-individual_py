@@ -95,19 +95,21 @@ class TestBasePythonWorkflowExecutor(TestCase):
         except PythonWorkflowHandlerException:
             self.fail("validate_dataframe_headers() raised PythonWorkflowHandlerException unexpectedly!")
 
-    def test_blank_payment_columns_do_not_change_standard_create_or_update_headers(self):
+    def test_standard_workflows_reject_payment_detail_columns(self):
         columns = [
             'first_name', 'last_name', 'dob', 'id', 'location_name', 'location_code',
             'form_number', 'nid', 'account_number', 'account_name', 'bank',
         ]
         self.executor.df = pd.DataFrame([{column: '' for column in columns}], columns=columns)
 
-        self.executor.validate_dataframe_headers()
+        with self.assertRaisesRegex(PythonWorkflowHandlerException, "only allowed through the Python KYC Details workflow"):
+            self.executor.validate_dataframe_headers()
         columns.append('ID')
         self.executor.df = pd.DataFrame([{column: '' for column in columns}], columns=columns)
-        self.executor.validate_dataframe_headers(is_update=True)
+        with self.assertRaisesRegex(PythonWorkflowHandlerException, "only allowed through the Python KYC Details workflow"):
+            self.executor.validate_dataframe_headers(is_update=True)
 
-    def test_payment_details_values_are_only_allowed_in_update_imports(self):
+    def test_payment_details_values_are_only_allowed_in_kyc_workflow(self):
         columns = [
             'first_name', 'last_name', 'dob', 'id', 'location_name', 'location_code',
             'ID', 'form_number', 'nid', 'account_number', 'account_name', 'bank',
@@ -125,7 +127,9 @@ class TestBasePythonWorkflowExecutor(TestCase):
 
         with self.assertRaises(PythonWorkflowHandlerException):
             self.executor.validate_dataframe_headers()
-        self.executor.validate_dataframe_headers(is_update=True)
+        with self.assertRaisesRegex(PythonWorkflowHandlerException, "only allowed through the Python KYC Details workflow"):
+            self.executor.validate_dataframe_headers(is_update=True)
+        self.executor.validate_dataframe_headers(is_update=True, allow_payment_details=True)
 
     def test_kyc_details_upload_requires_payment_columns_and_values(self):
         incomplete = pd.DataFrame([{"form_number": "F-001"}])
@@ -166,7 +170,7 @@ class TestBasePythonWorkflowExecutor(TestCase):
         with self.assertRaisesRegex(PythonWorkflowHandlerException, "unsupported columns"):
             _validate_kyc_details_file(pd.DataFrame([row]))
 
-    def test_update_task_preserves_payment_detail_validation(self):
+    def test_update_task_does_not_repeat_payment_detail_validation(self):
         with patch("individual.workflows.utils.IndividualImportService") as service_class, \
                 patch("individual.workflows.utils.IndividualDataSource.objects.filter"):
             service = service_class.return_value
@@ -179,7 +183,7 @@ class TestBasePythonWorkflowExecutor(TestCase):
 
             self.assertTrue(update_workflow.should_create_task)
             service.validate_import_individuals.assert_called_once()
-            service.validate_payment_details_upload.assert_called_once_with(self.upload_id)
+            service.validate_payment_details_upload.assert_not_called()
 
     def test_kyc_update_workflow_forces_maker_checker(self):
         with patch("individual.workflows.utils.IndividualImportService") as service_class:

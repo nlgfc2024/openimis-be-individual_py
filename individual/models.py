@@ -205,6 +205,10 @@ class GroupIndividual(HistoryModel):
         else:
             super().delete(username=kwargs.get('username'))
 
+        from individual.services import GroupAndGroupIndividualAlignmentService
+        service = GroupAndGroupIndividualAlignmentService(self.user_updated)
+        service.update_json_ext_for_group(self.group)
+
     @classmethod
     def get_queryset(cls, queryset, user):
         if queryset is None:

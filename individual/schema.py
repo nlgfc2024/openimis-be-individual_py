@@ -28,12 +28,6 @@ from individual.primary_recipients import (
     primary_worker_membership_filter,
 )
 from location.apps import LocationConfig
-from location.models import (
-    HotspotVillage,
-    MicroCatchmentGVH,
-    MicroCatchmentTA,
-)
-from social_protection.models import BenefitPlan
 
 
 def patch_details(data_df: pd.DataFrame):
@@ -208,6 +202,8 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
         query = IndividualGQLType.get_queryset(None, info)
         query = query.filter(*filters)
         if primary_recipient_only:
+            from location.models import MicroCatchmentGVH
+
             catchment_query = MicroCatchmentGVH.objects.filter(
                 location_id=OuterRef("location__parent_id"),
             ).filter(*MicroCatchmentGVH.filter_validity())
@@ -328,6 +324,8 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
 
         micro_catchment_uuid = kwargs.get("micro_catchment_uuid")
         if micro_catchment_uuid:
+            from location.models import MicroCatchmentGVH, MicroCatchmentTA
+
             gvh_ids = MicroCatchmentGVH.objects.filter(
                 micro_catchment__uuid=micro_catchment_uuid,
                 validity_to__isnull=True,
@@ -348,6 +346,8 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
 
         hotspot_id = kwargs.get("hotspot_id")
         if hotspot_id:
+            from location.models import HotspotVillage
+
             hotspot_village_ids = HotspotVillage.objects.filter(
                 hotspot_id=hotspot_id,
                 validity_to__isnull=True,
@@ -382,6 +382,8 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
         query = GroupGQLType.get_queryset(None, info)
         query = query.filter(*filters).distinct()
         if benefit_plan_id and kwargs.get("primary_recipient_only"):
+            from social_protection.models import BenefitPlan
+
             phase_name_query = BenefitPlan.objects.filter(
                 id=benefit_plan_id,
                 is_deleted=False,
@@ -390,6 +392,8 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             ).values("export_phase_name")[:1]
             query = query.annotate(kyc_phase=Subquery(phase_name_query))
         if kwargs.get("include_primary_recipient_data"):
+            from location.models import MicroCatchmentGVH
+
             primary_recipient_query = authoritative_primary_worker_memberships().filter(
                 group_id=OuterRef("pk"),
             ).order_by("id")

@@ -18,7 +18,7 @@ from core.views import check_user_rights
 from individual.apps import IndividualConfig
 from individual.data_source import (
     KYC_DETAILS_WORKFLOW_NAME,
-    PAYMENT_DETAILS_REQUIRED_COLUMNS,
+    PAYMENT_DETAILS_FIELDS,
     PAYMENT_DETAILS_TEMPLATE_COLUMNS,
 )
 from individual.models import IndividualDataSource
@@ -63,7 +63,9 @@ def get_global_schema_fields():
     schema = json.loads(IndividualConfig.individual_schema)
     # Extract property keys and add additional fields specific to individuals
     schema_properties = set(schema.get('properties', {}).keys())
-    schema_properties.update(PAYMENT_DETAILS_REQUIRED_COLUMNS)
+    # KYC identity/payment values have their own controlled workflow and
+    # template; do not offer them in generic individual uploads.
+    schema_properties.difference_update(PAYMENT_DETAILS_FIELDS | {'form_number', 'nid'})
     schema_properties.update(['recipient_info', 'individual_role', 'group_code'])
     return list(schema_properties)
 

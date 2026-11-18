@@ -121,6 +121,24 @@ class PaymentDetailsExcelLoaderTests(SimpleTestCase):
         self.assertEqual(dataframe.loc[0, "account_number"], "00012345")
         self.assertEqual(dataframe.loc[1, "account_number"], "__INVALID_NUMERIC_EXCEL_CELL__")
 
+    def test_xlsx_checks_the_first_worksheet_used_by_pandas(self):
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "KYC data"
+        worksheet.append(["account_number"])
+        worksheet.append(["00012345"])
+        other_sheet = workbook.create_sheet("Other")
+        other_sheet.append(["account_number"])
+        other_sheet.append([12345])
+        workbook.active = 1
+        file_buffer = BytesIO()
+        workbook.save(file_buffer)
+        file_buffer.seek(0)
+
+        dataframe = _load_xlsx_with_text_columns(file_buffer)
+
+        self.assertEqual(dataframe.loc[0, "account_number"], "00012345")
+
 
 class PaymentDetailsImportTests(TestCase):
     @classmethod
@@ -329,6 +347,17 @@ class PaymentDetailsImportTests(TestCase):
         validated, invalid = self._validate(upload, sources)
         for source in sources:
             source.refresh_from_db()
+
+        self.assertEqual(len(invalid), 2)
+        self.assertTrue(all(
+            not row["validations"]["payment_details_form_number"]["success"]
+            for row in validated
+        ))
+
+    def test_duplicate_form_number_with_different_national_ids_is_rejected(self):
+        upload, sources = self._create_upload([{}, {"nid": "NID-OTHER"}])
+
+        validated, invalid = self._validate(upload, sources)
 
         self.assertEqual(len(invalid), 2)
         self.assertTrue(all(

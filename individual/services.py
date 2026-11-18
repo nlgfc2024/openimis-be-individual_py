@@ -52,7 +52,6 @@ from tasks_management.models import Task
 from tasks_management.services import UpdateCheckerLogicServiceMixin, CreateCheckerLogicServiceMixin, \
     crud_business_data_builder, DeleteCheckerLogicServiceMixin
 from workflow.systems.base import WorkflowHandler
-from household_validation.identity import get_household_form_number
 from individual.primary_recipients import (
     authoritative_primary_worker_memberships,
     primary_worker_membership_filter,
@@ -83,7 +82,9 @@ def _load_xlsx_with_text_columns(import_file):
     dataframe = _load_with_text_columns(pd.read_excel, import_file)
     import_file.seek(0)
     workbook = load_workbook(import_file, read_only=True, data_only=True)
-    worksheet = workbook.active
+    # pandas reads the first worksheet by default; inspect that same worksheet
+    # when detecting account numbers that Excel stored as numeric values.
+    worksheet = workbook.worksheets[0]
     header = [cell.value for cell in next(worksheet.iter_rows(min_row=1, max_row=1), ())]
     try:
         account_number_column = next(
@@ -126,7 +127,7 @@ def _load_xls_with_text_columns(import_file):
         account_number_text_type = xlrd.XL_CELL_TEXT
         for row_index in range(1, worksheet.nrows):
             cell = worksheet.cell(row_index, account_number_column)
-            if cell.ctype != xlrd.XL_CELL_EMPTY and cell.ctype != account_number_text_type:
+            if cell.ctype not in {xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK, account_number_text_type}:
                 dataframe.at[row_index - 1, dataframe.columns[account_number_column]] = INVALID_NUMERIC_EXCEL_CELL
         workbook.release_resources()
         import_file.seek(0)
@@ -892,6 +893,7 @@ class IndividualImportService:
             if len(duplicate_rows) > 1:
                 submitted_details = {
                     (
+                        _normalize_import_text(item["row"].get("nid") or item["row"].get("national_id")),
                         _import_text(item["row"].get("account_number")),
                         _normalize_import_text(item["row"].get("account_name")),
                         _normalize_import_text(item["row"].get("bank")),
@@ -914,6 +916,7 @@ class IndividualImportService:
                 continue
 
             group, recipient = recipient_matches[0]
+            from household_validation.identity import get_household_form_number
             if _normalize_import_text(get_household_form_number(group, recipient)) != normalized_form_number:
                 reject("form_number", "The form_number does not match the household.")
                 continue

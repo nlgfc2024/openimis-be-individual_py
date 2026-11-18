@@ -48,7 +48,7 @@ class BasePythonWorkflowExecutor(metaclass=ABCMeta):
                         "It'll be removed from upload.")
         return df
 
-    def validate_dataframe_headers(self, is_update=False):
+    def validate_dataframe_headers(self, is_update=False, allow_payment_details=False):
         """
         Validates if DataFrame headers:
         1. Are included in the JSON schema properties.
@@ -58,8 +58,17 @@ class BasePythonWorkflowExecutor(metaclass=ABCMeta):
         """
         df_headers = set(self.df.columns)
         schema_properties = set(self.schema.get('properties', {}).keys())
-        schema_properties.update(PAYMENT_DETAILS_REQUIRED_COLUMNS)
         schema_properties.update(['recipient_info', 'group_code', 'individual_role', DATA_SOURCE_FIELD])
+        payment_detail_columns = PAYMENT_DETAILS_FIELDS | {'form_number', 'nid'}
+        supplied_payment_columns = payment_detail_columns.intersection(df_headers)
+        if supplied_payment_columns and not allow_payment_details:
+            raise PythonWorkflowHandlerException(
+                "Payment detail columns are only allowed through the Python KYC Details workflow: {}".format(
+                    ", ".join(sorted(supplied_payment_columns)),
+                )
+            )
+        if allow_payment_details:
+            schema_properties.update(PAYMENT_DETAILS_REQUIRED_COLUMNS)
         payment_details_update = has_payment_details_columns(df_headers) and any(
             self.df[field].map(
                 lambda value: value is not None and not pd.isna(value) and bool(str(value).strip())
@@ -69,7 +78,7 @@ class BasePythonWorkflowExecutor(metaclass=ABCMeta):
         )
         if payment_details_update and not is_update:
             raise PythonWorkflowHandlerException(
-                "Payment details can only be uploaded through the individual update workflow."
+                "Payment details can only be uploaded through the Python KYC Details workflow."
             )
 
         if payment_details_update:
@@ -210,7 +219,6 @@ class DataUpdateWorkflow(MakerCheckerPythonWorkflowExecutor):
             upload_id=self.upload_uuid,
             individual_sources=IndividualDataSource.objects.filter(upload_id=self.upload_uuid)
         )
-        self.import_service.validate_payment_details_upload(self.upload_uuid)
         return validation_response['summary_invalid_items'] or True  # Replace this with config check
 
     def _create_task_function(self):

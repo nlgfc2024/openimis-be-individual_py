@@ -10,7 +10,6 @@ logger = logging.getLogger(__name__)
 
 def process_update_valid_individuals_workflow(user_uuid, upload_uuid, accepted=None):
     user = User.objects.get(id=user_uuid)
-    IndividualImportService(user).validate_payment_details_upload(upload_uuid)
     service = SqlProcedurePythonWorkflow(upload_uuid, user_uuid, accepted)
     if is_kyc_details_upload(upload_uuid):
         _validate_kyc_details_file(service.df)
