@@ -630,7 +630,40 @@ class IndividualImportService:
                     'status': upload.status,
                 },
             }
-        return {'success': True, 'data': {'upload_uuid': upload.uuid}}
+        data = {'upload_uuid': str(upload.uuid)}
+        if workflow.name == KYC_DETAILS_WORKFLOW_NAME:
+            data['summary'] = self._kyc_upload_summary(upload)
+        return {'success': True, 'data': data}
+
+    @staticmethod
+    def _kyc_upload_summary(upload):
+        """Return immediate KYC metrics; approval is still required to save them."""
+        sources = list(
+            IndividualDataSource.objects.filter(upload=upload, is_deleted=False).values(
+                "json_ext", "validations",
+            )
+        )
+        invalid_sources = [
+            source for source in sources
+            if (source.get("validations") or {}).get("validation_errors")
+        ]
+
+        def has_value(source, field):
+            value = (source.get("json_ext") or {}).get(field)
+            return bool(_import_text(value))
+
+        return {
+            "rows_read": len(sources),
+            "records_ready_for_approval": len(sources) - len(invalid_sources),
+            "records_rejected": len(invalid_sources),
+            "primary_recipients_matched": sum(has_value(source, "ID") for source in sources),
+            "payment_accounts_submitted": sum(
+                has_value(source, "account_number") for source in sources
+            ),
+            "national_ids_submitted": sum(has_value(source, "nid") for source in sources),
+            "errors": len(invalid_sources),
+            "status": upload.status,
+        }
 
     @transaction.atomic
     def _save_sources(self, import_file, normalize_kyc_headers=False):

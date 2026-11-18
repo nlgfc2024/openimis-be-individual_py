@@ -194,6 +194,18 @@ class PaymentDetailsImportTests(TestCase):
         self.assertEqual(sources[0].validations["validation_errors"], [])
         self.assertEqual(sources[0].validations["validation_warnings"][0]["field_name"], "first_name")
 
+    def test_kyc_upload_summary_reports_rows_ready_for_approval(self):
+        upload, _ = self._create_upload([{}])
+
+        summary = IndividualImportService._kyc_upload_summary(upload)
+
+        self.assertEqual(summary["rows_read"], 1)
+        self.assertEqual(summary["records_ready_for_approval"], 1)
+        self.assertEqual(summary["records_rejected"], 0)
+        self.assertEqual(summary["primary_recipients_matched"], 1)
+        self.assertEqual(summary["payment_accounts_submitted"], 1)
+        self.assertEqual(summary["national_ids_submitted"], 1)
+
     def test_nid_replacement_is_accepted_for_payment_details_row(self):
         upload, sources = self._create_upload([{"nid": "NID-OTHER"}])
 
@@ -205,16 +217,17 @@ class PaymentDetailsImportTests(TestCase):
         self.assertEqual(sources[0].validations["validation_errors"], [])
 
     def test_numeric_form_number_and_blank_existing_nid_are_accepted(self):
+        numeric_form_number = int(f"9{uuid.uuid4().int % 10**8:08d}")
         recipient = Individual(
             first_name="Numeric",
             last_name="Recipient",
             dob="1980-01-01",
-            json_ext={"form_number": 30201307, "national_id": None},
+            json_ext={"form_number": numeric_form_number, "national_id": None},
         )
         recipient.save(user=self.user)
         group = Group(
             code=f"PAYMENT-{uuid.uuid4()}",
-            json_ext={"form_number": 30201307},
+            json_ext={"form_number": numeric_form_number},
         )
         group.save(user=self.user)
         GroupIndividual(
@@ -230,7 +243,7 @@ class PaymentDetailsImportTests(TestCase):
         source = IndividualDataSource(
             upload=upload,
             json_ext={
-                "form_number": "30201307",
+                "form_number": str(numeric_form_number),
                 "nid": "NEW-NID-001",
                 "first_name": "Numeric",
                 "last_name": "Recipient",
@@ -244,7 +257,10 @@ class PaymentDetailsImportTests(TestCase):
         )
         source.save(user=self.user)
 
-        validated, invalid = self._validate(upload, [source])
+        # This test isolates the JSON numeric/text form-number representation;
+        # district scope is covered by the import-service scope tests.
+        with patch("individual.services.Group.get_queryset", side_effect=lambda queryset, user: queryset):
+            validated, invalid = self._validate(upload, [source])
         source.refresh_from_db()
 
         self.assertEqual(invalid, [])
