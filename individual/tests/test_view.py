@@ -72,7 +72,7 @@ class TestView(APITestCase):
 
     def test_download_template_file_on_individual_schema_update(self):
         # First set the individual config to be empty
-        config = ModuleConfiguration.objects.filter(module='individual', layer='be')
+        config = ModuleConfiguration.objects.filter(module='individual', layer='be').first()
         if not config:
             config = ModuleConfiguration(module='individual', layer='be', config='{}')
         else:

@@ -125,8 +125,13 @@ def import_individuals(request):
         # Import individual data using the service
         result = IndividualImportService(user).import_individuals(import_file, workflow, group_aggregation_column)
 
-        # Preserve the uploaded file and return workflow diagnostics for the upload history.
+        # Return workflow diagnostics and remove the temporary source file.
         if not result.get('success'):
+            _remove_file(import_file)
+            result = {
+                **result,
+                'error': result.get('error') or result.get('details') or result.get('message'),
+            }
             return Response(result, status=status.HTTP_400_BAD_REQUEST)
 
         # Return the result of the import
