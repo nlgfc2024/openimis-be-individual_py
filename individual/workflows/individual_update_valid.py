@@ -20,7 +20,10 @@ def process_update_valid_individuals_workflow(user_uuid, upload_uuid, accepted=N
         service.execute(upload_sql_partial, [upload_uuid, user_uuid, accepted])
     else:
         service.execute(upload_sql, [upload_uuid, user_uuid])
-    IndividualImportService(user).synchronize_data_for_reporting(upload_uuid)
+    import_service = IndividualImportService(user)
+    if is_kyc_details_upload(upload_uuid):
+        import_service.synchronize_kyc_primary_recipients(upload_uuid, accepted)
+    import_service.synchronize_data_for_reporting(upload_uuid)
 
 
 upload_sql = """

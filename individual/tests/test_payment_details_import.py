@@ -137,12 +137,16 @@ class PaymentDetailsImportTests(TestCase):
             json_ext={"national_id": "NID-001", "form_number": "F-001"},
         )
         cls.recipient.save(user=cls.user)
-        cls.group = Group(code=f"PAYMENT-{uuid.uuid4()}", json_ext={"form_number": "F-001"})
+        cls.group = Group(
+            code=f"PAYMENT-{uuid.uuid4()}",
+            json_ext={"form_number": "F-001", "validation_status": "VERIFIED"},
+        )
         cls.group.save(user=cls.user)
         cls.membership = GroupIndividual(
             group=cls.group,
             individual=cls.recipient,
             recipient_type=GroupIndividual.RecipientType.PRIMARY,
+            json_ext={"primary_worker": True},
         )
         cls.membership.save(user=cls.user)
 
@@ -216,6 +220,56 @@ class PaymentDetailsImportTests(TestCase):
         self.assertEqual(validated[0]["row"]["ID"], str(self.recipient.id))
         self.assertEqual(sources[0].validations["validation_errors"], [])
 
+    def test_approved_kyc_aligns_recipient_with_verified_primary_worker(self):
+        other_member = Individual(
+            first_name="Other",
+            last_name="Member",
+            dob="1985-01-01",
+            json_ext={"form_number": "F-ALIGN"},
+        )
+        other_member.save(user=self.user)
+        worker = Individual(
+            first_name="Validated",
+            last_name="Worker",
+            dob="1985-01-01",
+            json_ext={"form_number": "F-ALIGN"},
+        )
+        worker.save(user=self.user)
+        group = Group(
+            code=f"ALIGN-{uuid.uuid4()}",
+            json_ext={"form_number": "F-ALIGN", "validation_status": "VERIFIED"},
+        )
+        group.save(user=self.user)
+        old_recipient = GroupIndividual(
+            group=group,
+            individual=other_member,
+            recipient_type=GroupIndividual.RecipientType.PRIMARY,
+        )
+        old_recipient.save(user=self.user)
+        worker_membership = GroupIndividual(
+            group=group,
+            individual=worker,
+            recipient_type=GroupIndividual.RecipientType.SECONDARY,
+            json_ext={"primary_worker": True},
+        )
+        worker_membership.save(user=self.user)
+        upload = IndividualDataSourceUpload(source_name="align.csv", source_type="individual update")
+        upload.save(user=self.user)
+        IndividualDataSource(
+            upload=upload,
+            json_ext={"ID": str(worker.id)},
+            validations={"validation_errors": []},
+            user_created=self.user,
+            user_updated=self.user,
+        ).save(user=self.user)
+
+        IndividualImportService(self.user).synchronize_kyc_primary_recipients(upload.id)
+
+        worker_membership.refresh_from_db()
+        old_recipient.refresh_from_db()
+        self.assertEqual(worker_membership.recipient_type, GroupIndividual.RecipientType.PRIMARY)
+        self.assertIsNone(old_recipient.recipient_type)
+
     def test_numeric_form_number_and_blank_existing_nid_are_accepted(self):
         numeric_form_number = int(f"9{uuid.uuid4().int % 10**8:08d}")
         recipient = Individual(
@@ -227,13 +281,14 @@ class PaymentDetailsImportTests(TestCase):
         recipient.save(user=self.user)
         group = Group(
             code=f"PAYMENT-{uuid.uuid4()}",
-            json_ext={"form_number": numeric_form_number},
+            json_ext={"form_number": numeric_form_number, "validation_status": "VERIFIED"},
         )
         group.save(user=self.user)
         GroupIndividual(
             group=group,
             individual=recipient,
             recipient_type=GroupIndividual.RecipientType.PRIMARY,
+            json_ext={"primary_worker": True},
         ).save(user=self.user)
         upload = IndividualDataSourceUpload(
             source_name="numeric-form-payment-details.csv",

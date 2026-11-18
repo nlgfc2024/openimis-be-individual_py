@@ -8,6 +8,7 @@ from core.gql_queries import UserGQLType
 from individual.apps import IndividualConfig
 from individual.models import Individual, IndividualDataSource, Group, GroupIndividual, \
     IndividualDataSourceUpload, IndividualDataUploadRecords, GroupDataSource
+from individual.primary_recipients import authoritative_primary_worker_memberships
 
 
 def _have_permissions(user, permission):
@@ -120,6 +121,7 @@ class IndividualDataSourceGQLType(DjangoObjectType):
 class GroupGQLType(DjangoObjectType):
     uuid = graphene.String(source='uuid')
     head = graphene.Field(IndividualGQLType)
+    primary_recipient = graphene.Field(IndividualGQLType)
     # Populated only for the Phase-scoped KYC export. These scalar fields are
     # explicitly declared so the generic, allow-listed Group exporter can use
     # the annotations added by ``resolve_group``.
@@ -139,6 +141,12 @@ class GroupGQLType(DjangoObjectType):
             groupindividuals__role=GroupIndividual.Role.HEAD,
             groupindividuals__is_deleted=False,
         ).first()
+
+    def resolve_primary_recipient(self, info):
+        primary = authoritative_primary_worker_memberships().filter(
+            group_id=self.id,
+        ).select_related("individual").first()
+        return primary.individual if primary else None
 
     class Meta:
         model = Group

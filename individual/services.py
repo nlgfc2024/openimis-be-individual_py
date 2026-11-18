@@ -53,6 +53,10 @@ from tasks_management.services import UpdateCheckerLogicServiceMixin, CreateChec
     crud_business_data_builder, DeleteCheckerLogicServiceMixin
 from workflow.systems.base import WorkflowHandler
 from household_validation.identity import get_household_form_number
+from individual.primary_recipients import (
+    authoritative_primary_worker_memberships,
+    primary_worker_membership_filter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -714,6 +718,32 @@ class IndividualImportService:
 
             IndividualDocument().update(individuals, 'index')
 
+    def synchronize_kyc_primary_recipients(self, upload_id: uuid, accepted=None):
+        """Align approved KYC recipients with the validated primary worker."""
+        recipient_ids = []
+        sources = IndividualDataSource.objects.filter(upload_id=upload_id, is_deleted=False)
+        if isinstance(accepted, list):
+            sources = sources.filter(id__in=accepted)
+        for source in sources:
+            if (source.validations or {}).get("validation_errors"):
+                continue
+            recipient_id = (source.json_ext or {}).get("ID")
+            try:
+                recipient_ids.append(uuid.UUID(str(recipient_id)))
+            except (TypeError, ValueError, AttributeError):
+                continue
+
+        if not recipient_ids:
+            return
+
+        memberships = authoritative_primary_worker_memberships().filter(
+            individual_id__in=recipient_ids,
+        ).select_related("group")
+        for membership in memberships:
+            if membership.recipient_type != GroupIndividual.RecipientType.PRIMARY:
+                membership.recipient_type = GroupIndividual.RecipientType.PRIMARY
+                membership.save(user=self.user)
+
     @staticmethod
     def process_chunk(
         chunk,
@@ -933,16 +963,12 @@ class IndividualImportService:
             for value in requested_form_numbers
             if str(value).isdigit() and not str(value).startswith("0")
         )
-        primary_memberships = GroupIndividual.objects.filter(
-            recipient_type=GroupIndividual.RecipientType.PRIMARY,
-            is_deleted=False,
-        ).select_related("individual")
+        primary_memberships = authoritative_primary_worker_memberships().select_related("individual")
         groups = Group.objects.filter(is_deleted=False).filter(
             Q(json_ext__form_number__in=form_number_lookup_values)
-            | Q(
-                groupindividuals__recipient_type=GroupIndividual.RecipientType.PRIMARY,
-                groupindividuals__is_deleted=False,
-                groupindividuals__individual__json_ext__form_number__in=form_number_lookup_values,
+            | (
+                primary_worker_membership_filter("groupindividuals")
+                & Q(groupindividuals__individual__json_ext__form_number__in=form_number_lookup_values)
             )
         ).prefetch_related(
             Prefetch(

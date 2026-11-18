@@ -401,6 +401,9 @@ class IndividualGQLQueryTest(IndividualGQLTestCase):
 
     def test_primary_recipient_only_filter(self):
         self.group_individual_a.recipient_type = GroupIndividual.RecipientType.PRIMARY
+        self.group_individual_a.json_ext = {"primary_worker": True}
+        self.group_a.json_ext = {**(self.group_a.json_ext or {}), "validation_status": "VERIFIED"}
+        self.group_a.save(username=self.admin_user.username)
         self.group_individual_a.save(username=self.admin_user.username)
 
         response = self.query(
@@ -432,6 +435,7 @@ class IndividualGQLQueryTest(IndividualGQLTestCase):
         }
         self.group_a.save(username=self.admin_user.username)
         self.group_individual_a.recipient_type = GroupIndividual.RecipientType.PRIMARY
+        self.group_individual_a.json_ext = {"primary_worker": True}
         self.group_individual_a.save(username=self.admin_user.username)
 
         response = self.query(

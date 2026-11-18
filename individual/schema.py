@@ -23,6 +23,10 @@ from individual.gql_queries import IndividualGQLType, IndividualHistoryGQLType, 
     GroupDataSourceGQLType
 from individual.models import Individual, IndividualDataSource, Group, \
     GroupIndividual, IndividualDataSourceUpload, IndividualDataUploadRecords, GroupDataSource
+from individual.primary_recipients import (
+    authoritative_primary_worker_memberships,
+    primary_worker_membership_filter,
+)
 from location.apps import LocationConfig
 from location.models import (
     HotspotVillage,
@@ -194,10 +198,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
 
         primary_recipient_only = kwargs.get("primary_recipient_only", False)
         if primary_recipient_only:
-            filters.append(Q(
-                groupindividuals__recipient_type=GroupIndividual.RecipientType.PRIMARY,
-                groupindividuals__is_deleted=False,
-            ))
+            filters.append(primary_worker_membership_filter("groupindividuals"))
 
         parent_location = kwargs.get('parent_location')
         parent_location_level = kwargs.get('parent_location_level')
@@ -355,10 +356,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             filters.append(Q(location_id__in=hotspot_village_ids))
 
         if kwargs.get("primary_recipient_only"):
-            filters.append(Q(
-                groupindividuals__recipient_type=GroupIndividual.RecipientType.PRIMARY,
-                groupindividuals__is_deleted=False,
-            ))
+            filters.append(primary_worker_membership_filter("groupindividuals"))
 
         benefit_plan_id = kwargs.get("benefitPlanId")
         if benefit_plan_id:
@@ -392,10 +390,8 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             ).values("export_phase_name")[:1]
             query = query.annotate(kyc_phase=Subquery(phase_name_query))
         if kwargs.get("include_primary_recipient_data"):
-            primary_recipient_query = GroupIndividual.objects.filter(
+            primary_recipient_query = authoritative_primary_worker_memberships().filter(
                 group_id=OuterRef("pk"),
-                recipient_type=GroupIndividual.RecipientType.PRIMARY,
-                is_deleted=False,
             ).order_by("id")
             primary_recipient_name_query = primary_recipient_query.annotate(
                 full_name=Concat(
