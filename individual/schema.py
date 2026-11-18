@@ -2,7 +2,9 @@ import json
 import graphene
 import graphene_django_optimizer as gql_optimizer
 import pandas as pd
+from django.apps import apps
 from django.contrib.auth.models import AnonymousUser
+from django.core.exceptions import PermissionDenied
 from django.db.models import Q, OuterRef, Subquery, Value
 from django.db.models.functions import Concat
 
@@ -175,6 +177,26 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
 
         benefit_plan_id = kwargs.get("benefitPlanId")
         if benefit_plan_id:
+            if apps.is_installed("social_protection"):
+                from social_protection.apps import SocialProtectionConfig
+                from social_protection.benefit_plan_access import (
+                    require_benefit_plan_access,
+                )
+
+                require_benefit_plan_access(
+                    info.context.user,
+                    benefit_plan_id,
+                )
+                if (
+                    SocialProtectionConfig.enable_benefit_plan_access_control
+                ):
+                    from social_protection.models import BenefitPlan
+
+                    if not BenefitPlan.objects.filter(
+                        id=benefit_plan_id,
+                        is_deleted=False,
+                    ).exists():
+                        raise PermissionDenied("Benefit Plan does not exist.")
             filters.append(
                 Q(is_deleted=False) & Q(
                     beneficiary__benefit_plan_id=benefit_plan_id
