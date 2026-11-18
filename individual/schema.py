@@ -397,6 +397,13 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
                 recipient_type=GroupIndividual.RecipientType.PRIMARY,
                 is_deleted=False,
             ).order_by("id")
+            primary_recipient_name_query = primary_recipient_query.annotate(
+                full_name=Concat(
+                    "individual__first_name",
+                    Value(" "),
+                    "individual__last_name",
+                )
+            )
             catchment_query = primary_recipient_query.annotate(
                 primary_catchment=Subquery(
                     MicroCatchmentGVH.objects.filter(
@@ -415,8 +422,14 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
                 primary_recipient_last_name=Subquery(
                     primary_recipient_query.values("individual__last_name")[:1]
                 ),
+                primary_recipient_full_name=Subquery(
+                    primary_recipient_name_query.values("full_name")[:1]
+                ),
                 primary_recipient_dob=Subquery(
                     primary_recipient_query.values("individual__dob")[:1]
+                ),
+                primary_recipient_gender=Subquery(
+                    primary_recipient_query.values("individual__json_ext__gender")[:1]
                 ),
                 primary_recipient_national_id=Subquery(
                     primary_recipient_query.values("individual__json_ext__national_id")[:1]
