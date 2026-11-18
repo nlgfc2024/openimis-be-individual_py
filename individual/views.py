@@ -65,7 +65,7 @@ def get_global_schema_fields():
     schema_properties = set(schema.get('properties', {}).keys())
     # KYC identity/payment values have their own controlled workflow and
     # template; do not offer them in generic individual uploads.
-    schema_properties.difference_update(PAYMENT_DETAILS_FIELDS | {'form_number', 'nid'})
+    schema_properties.difference_update(PAYMENT_DETAILS_FIELDS | {'nid'})
     schema_properties.update(['recipient_info', 'individual_role', 'group_code'])
     return list(schema_properties)
 

@@ -740,10 +740,17 @@ class IndividualImportService:
         memberships = authoritative_primary_worker_memberships().filter(
             individual_id__in=recipient_ids,
         ).select_related("group")
+        alignment_service = GroupAndGroupIndividualAlignmentService(self.user)
         for membership in memberships:
             if membership.recipient_type != GroupIndividual.RecipientType.PRIMARY:
+                alignment_service.handle_primary_recipient_change(
+                    membership.id,
+                    GroupIndividual.RecipientType.PRIMARY,
+                    membership.group_id,
+                )
                 membership.recipient_type = GroupIndividual.RecipientType.PRIMARY
                 membership.save(user=self.user)
+                alignment_service.update_json_ext_for_group(membership.group)
 
     @staticmethod
     def process_chunk(

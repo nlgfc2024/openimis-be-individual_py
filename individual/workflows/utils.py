@@ -59,7 +59,7 @@ class BasePythonWorkflowExecutor(metaclass=ABCMeta):
         df_headers = set(self.df.columns)
         schema_properties = set(self.schema.get('properties', {}).keys())
         schema_properties.update(['recipient_info', 'group_code', 'individual_role', DATA_SOURCE_FIELD])
-        payment_detail_columns = PAYMENT_DETAILS_FIELDS | {'form_number', 'nid'}
+        payment_detail_columns = PAYMENT_DETAILS_FIELDS | {'nid'}
         supplied_payment_columns = payment_detail_columns.intersection(df_headers)
         if supplied_payment_columns and not allow_payment_details:
             raise PythonWorkflowHandlerException(

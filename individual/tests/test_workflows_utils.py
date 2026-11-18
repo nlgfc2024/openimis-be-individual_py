@@ -25,6 +25,7 @@ class TestBasePythonWorkflowExecutor(TestCase):
             "properties": {
                 "email": {"type": "string", "uniqueness": True},
                 "able_bodied": {"type": "boolean"},
+                "form_number": {"type": "string"},
             }
         }
         self.mock_load_dataframe = patch('individual.workflows.utils.load_dataframe').start()
@@ -108,6 +109,13 @@ class TestBasePythonWorkflowExecutor(TestCase):
         self.executor.df = pd.DataFrame([{column: '' for column in columns}], columns=columns)
         with self.assertRaisesRegex(PythonWorkflowHandlerException, "only allowed through the Python KYC Details workflow"):
             self.executor.validate_dataframe_headers(is_update=True)
+
+    def test_standard_workflow_allows_schema_declared_form_number(self):
+        self.executor.df = pd.DataFrame(columns=[
+            'first_name', 'last_name', 'dob', 'id', 'location_name', 'location_code', 'form_number',
+        ])
+
+        self.executor.validate_dataframe_headers()
 
     def test_payment_details_values_are_only_allowed_in_kyc_workflow(self):
         columns = [

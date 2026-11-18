@@ -50,7 +50,7 @@ class TestView(APITestCase):
             expected_base_csv_header in content,
             f'Expect csv template header to contain {expected_base_csv_header}, but got {content}'
         )
-        for kyc_only_column in ('form_number', 'nid', 'account_number', 'account_name', 'bank'):
+        for kyc_only_column in ('nid', 'account_number', 'account_name', 'bank'):
             self.assertNotIn(kyc_only_column, content)
 
     def test_download_kyc_details_template_file(self):

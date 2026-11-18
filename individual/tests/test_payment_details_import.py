@@ -292,8 +292,10 @@ class PaymentDetailsImportTests(TestCase):
 
         worker_membership.refresh_from_db()
         old_recipient.refresh_from_db()
+        group.refresh_from_db()
         self.assertEqual(worker_membership.recipient_type, GroupIndividual.RecipientType.PRIMARY)
         self.assertIsNone(old_recipient.recipient_type)
+        self.assertEqual(group.json_ext["primary_recipient_id"], str(worker.id))
 
     def test_numeric_form_number_and_blank_existing_nid_are_accepted(self):
         numeric_form_number = int(f"9{uuid.uuid4().int % 10**8:08d}")

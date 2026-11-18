@@ -31,6 +31,7 @@ def primary_worker_membership_filter(prefix=""):
     return Q(**{
         f"{prefix}{separator}is_deleted": False,
         f"{prefix}{separator}individual__is_deleted": False,
+        f"{prefix}{separator}group__is_deleted": False,
         f"{prefix}{separator}json_ext__{primary_worker_field}": True,
         f"{prefix}{separator}group__json_ext__{verification_field}": verified_value,
     })
