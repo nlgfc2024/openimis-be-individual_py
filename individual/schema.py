@@ -379,7 +379,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
         if parent_location is not None and parent_location_level is not None:
             filters.append(Query._get_location_filters(parent_location, parent_location_level))
 
-        query = Group.objects.all()
+        query = Group.get_queryset(None, info.context.user)
         query = query.filter(*filters).distinct()
         if benefit_plan_id and kwargs.get("primary_recipient_only"):
             from social_protection.models import BenefitPlan
