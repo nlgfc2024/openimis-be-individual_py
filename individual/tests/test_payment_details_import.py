@@ -167,6 +167,11 @@ class PaymentDetailsImportTests(TestCase):
             json_ext={"primary_worker": True},
         )
         cls.membership.save(user=cls.user)
+        # Membership saves refresh the denormalized household data from the
+        # head. Restore the validation result that the validation workflow
+        # persists after household membership has been established.
+        cls.group.json_ext["validation_status"] = "VERIFIED"
+        cls.group.save(user=cls.user)
 
     def _create_upload(self, rows):
         upload = IndividualDataSourceUpload(
@@ -271,6 +276,8 @@ class PaymentDetailsImportTests(TestCase):
             json_ext={"primary_worker": True},
         )
         worker_membership.save(user=self.user)
+        group.json_ext["validation_status"] = "VERIFIED"
+        group.save(user=self.user)
         upload = IndividualDataSourceUpload(source_name="align.csv", source_type="individual update")
         upload.save(user=self.user)
         IndividualDataSource(
@@ -308,6 +315,8 @@ class PaymentDetailsImportTests(TestCase):
             recipient_type=GroupIndividual.RecipientType.PRIMARY,
             json_ext={"primary_worker": True},
         ).save(user=self.user)
+        group.json_ext["validation_status"] = "VERIFIED"
+        group.save(user=self.user)
         upload = IndividualDataSourceUpload(
             source_name="numeric-form-payment-details.csv",
             source_type="individual update",
