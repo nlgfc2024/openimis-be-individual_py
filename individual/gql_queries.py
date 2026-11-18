@@ -1,5 +1,6 @@
 import graphene
 from django.contrib.auth.models import AnonymousUser
+from django.db.models import Prefetch
 from graphene_django import DjangoObjectType
 import graphene_django_optimizer as gql_optimizer
 
@@ -143,6 +144,9 @@ class GroupGQLType(DjangoObjectType):
         ).first()
 
     def resolve_primary_recipient(self, info):
+        primary_recipients = getattr(self, "primary_worker_memberships", None)
+        if primary_recipients is not None:
+            return primary_recipients[0].individual if primary_recipients else None
         primary = authoritative_primary_worker_memberships().filter(
             group_id=self.id,
         ).select_related("individual").first()
@@ -164,7 +168,14 @@ class GroupGQLType(DjangoObjectType):
 
     @classmethod
     def get_queryset(cls, queryset, info):
-        return Group.get_queryset(queryset, info.context.user)
+        primary_recipients = authoritative_primary_worker_memberships().select_related("individual")
+        return Group.get_queryset(queryset, info.context.user).prefetch_related(
+            Prefetch(
+                "groupindividuals",
+                queryset=primary_recipients,
+                to_attr="primary_worker_memberships",
+            ),
+        )
 
 
 class GroupHistoryGQLType(DjangoObjectType):
