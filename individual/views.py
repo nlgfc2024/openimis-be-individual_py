@@ -112,6 +112,7 @@ def download_template_file(request):
 @permission_classes([check_user_rights(IndividualConfig.gql_individual_create_perms)])
 def import_individuals(request):
     import_file = None
+    file_saved = False
     try:
         user = request.user
         # Resolve the arguments and handle file upload
@@ -122,12 +123,15 @@ def import_individuals(request):
             return Response({'success': False, 'error': error_message}, status=status.HTTP_400_BAD_REQUEST)
 
         _handle_file_upload(import_file)
+        file_saved = True
         # Import individual data using the service
         result = IndividualImportService(user).import_individuals(import_file, workflow, group_aggregation_column)
 
-        # Return workflow diagnostics and remove the temporary source file.
+        # A workflow failure is retained in upload history for correction;
+        # failures before an upload record exists remove the temporary file.
         if not result.get('success'):
-            _remove_file(import_file)
+            if not result.get('data', {}).get('upload_uuid'):
+                _remove_file(import_file)
             result = {
                 **result,
                 'error': result.get('error') or result.get('details') or result.get('message'),
@@ -138,7 +142,7 @@ def import_individuals(request):
         return Response(result)
     except ValueError as e:
         # Remove the file and log the error if a value error occurs
-        if import_file:
+        if import_file and file_saved:
             _remove_file(import_file)
         logger.error("Error while uploading individuals", exc_info=e)
         return Response({'success': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)

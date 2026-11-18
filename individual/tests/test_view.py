@@ -1,4 +1,5 @@
 import os
+import json
 from unittest.mock import patch, MagicMock
 from rest_framework.test import APITestCase
 from rest_framework import status
@@ -71,20 +72,14 @@ class TestView(APITestCase):
         )
 
     def test_download_template_file_on_individual_schema_update(self):
-        # First set the individual config to be empty
-        config = ModuleConfiguration.objects.filter(module='individual', layer='be').first()
-        if not config:
-            config = ModuleConfiguration(module='individual', layer='be', config='{}')
-        else:
-            config.config = '{}'
-        config.save()
-
-        # Then update individual config to with the fixture config
         with open(self.test_config_path, 'rb') as test_file:
-            config.config = test_file.read()
-        config.save()
+            fixture_config = json.load(test_file)
 
-        response = self.client.get(self.download_url)
+        # Module configuration is loaded when Django starts. Patch the active
+        # configuration for this request instead of relying on a model save to
+        # reload AppConfig state during a test.
+        with patch.object(IndividualConfig, 'individual_schema', fixture_config['individual_schema']):
+            response = self.client.get(self.download_url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
         # Check the template file contains individual schema fields from fixture config
