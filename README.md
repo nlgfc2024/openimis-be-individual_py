@@ -77,8 +77,34 @@ Workflows:
  * individual update
  * KYC details update (uses the individual update validation and approval flow;
    accepts form_number, nid, first_name, last_name, account_number,
-   account_name, bank, and optional district/ta/gvh/village/catchment context;
-   the upload dialog's Template button provides the matching CSV template)
+   account_name, bank, and optional location/context columns; the upload
+   dialog's Template button provides the configured CSV template)
+
+The KYC columns and accepted header aliases can be customized in the backend
+`individual` module configuration under `kyc_payment_details`. Unspecified
+values retain their defaults:
+
+```json
+{
+  "kyc_payment_details": {
+    "payment_fields": ["account_number", "account_name", "bank"],
+    "location_columns": ["district", "ta", "gvh", "village"],
+    "context_columns": ["catchment", "gender", "phase_name"],
+    "template_columns": [
+      "form_number", "district", "ta", "gvh", "village", "catchment",
+      "first_name", "last_name", "nid", "account_number", "account_name", "bank"
+    ],
+    "header_aliases": {
+      "wallet account number": "account_number",
+      "payment provider": "bank"
+    }
+  }
+}
+```
+
+`payment_fields` currently supports the stored payment keys `account_number`,
+`account_name`, and `bank`; configure alternate incoming headings through
+`header_aliases`, mapping each heading to its corresponding stored key.
 
 
 ## Additional Field Definition

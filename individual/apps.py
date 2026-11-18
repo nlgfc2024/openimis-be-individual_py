@@ -7,6 +7,7 @@ from django.apps import AppConfig
 from core.custom_filters import CustomFilterRegistryPoint
 from core.data_masking import MaskingClassRegistryPoint
 from core.module_config_registry import register_validator, register_reloader
+from individual.data_source import DEFAULT_KYC_PAYMENT_DETAILS_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,8 @@ DEFAULT_CONFIG = {
     ],
     "individual_base_fields": [
         'first_name', 'last_name', 'dob', 'location_name', 'location_code', 'id'
-    ]
+    ],
+    "kyc_payment_details": copy.deepcopy(DEFAULT_KYC_PAYMENT_DETAILS_CONFIG),
 }
 
 
@@ -100,13 +102,17 @@ class IndividualConfig(AppConfig):
     individual_mask_fields = None
     individual_masking_enabled = None
     individual_base_fields = None
+    kyc_payment_details = None
 
     def ready(self):
         from core.models import ModuleConfiguration
 
-        cfg = ModuleConfiguration.get_or_default(self.name, DEFAULT_CONFIG)
+        cfg = self._merge_kyc_config(
+            ModuleConfiguration.get_or_default(self.name, DEFAULT_CONFIG)
+        )
         self.__load_config(cfg)
         self.__validate_individual_schema(cfg)
+        self.__validate_kyc_payment_details(cfg)
         self.__initialize_custom_filters()
         self._set_up_workflows()
         self.__register_masking_class()
@@ -114,11 +120,39 @@ class IndividualConfig(AppConfig):
         register_reloader(self.name, self._reload_module_config)
 
     def _merge_with_defaults(self, instance):
-        return {**copy.deepcopy(DEFAULT_CONFIG), **instance._cfg}
+        cfg = {**copy.deepcopy(DEFAULT_CONFIG), **instance._cfg}
+        return self._merge_kyc_config(cfg)
+
+    @staticmethod
+    def _merge_kyc_config(cfg):
+        configured_kyc = cfg.get("kyc_payment_details", {})
+        if configured_kyc is None:
+            configured_kyc = {}
+        if not isinstance(configured_kyc, dict):
+            return cfg
+        configured_aliases = configured_kyc.get("header_aliases", {})
+        if configured_aliases is None:
+            configured_aliases = {}
+        if not isinstance(configured_aliases, dict):
+            cfg["kyc_payment_details"] = {
+                **copy.deepcopy(DEFAULT_KYC_PAYMENT_DETAILS_CONFIG),
+                **configured_kyc,
+            }
+            return cfg
+        cfg["kyc_payment_details"] = {
+            **copy.deepcopy(DEFAULT_KYC_PAYMENT_DETAILS_CONFIG),
+            **configured_kyc,
+            "header_aliases": {
+                **copy.deepcopy(DEFAULT_KYC_PAYMENT_DETAILS_CONFIG["header_aliases"]),
+                **configured_aliases,
+            },
+        }
+        return cfg
 
     def _validate_module_config(self, instance):
         cfg = self._merge_with_defaults(instance)
         self.__validate_individual_schema(cfg)
+        self.__validate_kyc_payment_details(cfg)
 
     def _reload_module_config(self, instance):
         cfg = self._merge_with_defaults(instance)
@@ -155,6 +189,33 @@ class IndividualConfig(AppConfig):
         if errors:
             error_messages = [error['message'] for error in errors]
             logging.error('Schema validation errors in individual schema: %s', ', '.join(error_messages))
+
+    @classmethod
+    def __validate_kyc_payment_details(cls, cfg):
+        config = cfg.get("kyc_payment_details")
+        list_keys = ("payment_fields", "location_columns", "context_columns", "template_columns")
+        if not isinstance(config, dict):
+            raise ValueError("kyc_payment_details must be an object")
+        for key in list_keys:
+            values = config.get(key)
+            if not isinstance(values, list) or (key == "payment_fields" and not values) or not all(
+                isinstance(value, str) and value.strip() for value in values
+            ):
+                raise ValueError(f"kyc_payment_details.{key} must be a list of non-empty strings")
+        supported_payment_fields = {"account_number", "account_name", "bank"}
+        if not set(config["payment_fields"]).issubset(supported_payment_fields):
+            raise ValueError(
+                "kyc_payment_details.payment_fields must use account_number, account_name, or bank"
+            )
+        if "account_number" not in config["payment_fields"]:
+            raise ValueError("kyc_payment_details.payment_fields must include account_number")
+        aliases = config.get("header_aliases")
+        if not isinstance(aliases, dict) or not all(
+            isinstance(alias, str) and alias.strip()
+            and isinstance(field, str) and field.strip()
+            for alias, field in aliases.items()
+        ):
+            raise ValueError("kyc_payment_details.header_aliases must map strings to field names")
 
     @classmethod
     def __initialize_custom_filters(cls):

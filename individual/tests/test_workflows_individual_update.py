@@ -45,7 +45,7 @@ class ProcessUpdateIndividualsWorkflowTest(TestCase):
         individual1_dict = {
             'first_name': 'Foo 1',
             'last_name': 'Bar',
-            'json_ext': {},
+            'json_ext': {'national_id': 'NID-KEEP'},
         }
         self.individual1 = create_individual(self.user.username, individual1_dict)
 
@@ -164,6 +164,7 @@ class ProcessUpdateIndividualsWorkflowTest(TestCase):
         individual1_from_db = Individual.objects.get(id=self.individual1.id)
         self.assertEqual(individual1_from_db.first_name, self.individual1_updated_first_name)
         self.assertEqual(individual1_from_db.location.name, self.village.name)
+        self.assertEqual(individual1_from_db.json_ext['national_id'], 'NID-KEEP')
 
         individual2_from_db = Individual.objects.get(id=self.individual2.id)
         self.assertEqual(individual2_from_db.first_name, self.individual2_updated_first_name)

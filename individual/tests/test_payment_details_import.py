@@ -1,4 +1,6 @@
+import json
 import uuid
+import zipfile
 from io import BytesIO
 from unittest.mock import patch
 
@@ -11,17 +13,79 @@ from individual.models import (
     Group,
     GroupIndividual,
     Individual,
+    IndividualDataUploadRecords,
     IndividualDataSource,
     IndividualDataSourceUpload,
 )
-from individual.data_source import normalize_kyc_dataframe_headers
-from individual.services import IndividualImportService, _load_xlsx_with_text_columns
+from individual.data_source import (
+    KYC_DETAILS_WORKFLOW_NAME,
+    normalize_kyc_dataframe_headers,
+    payment_details_template_columns,
+)
+from individual.apps import IndividualConfig
+from individual.services import (
+    INVALID_NUMERIC_EXCEL_CELL,
+    IndividualImportService,
+    IndividualTaskCreatorService,
+    _load_ods_with_text_columns,
+    _load_xlsx_with_text_columns,
+    _mark_numeric_ods_account_cells,
+)
 from individual.tests.test_helpers import create_test_interactive_user
 from individual.utils import load_dataframe
 from individual.workflows.base_individual_update import _validate_kyc_details_file
 
 
 class PaymentDetailsExcelLoaderTests(SimpleTestCase):
+    def test_kyc_columns_and_aliases_follow_module_configuration(self):
+        config = {
+            "payment_fields": ["account_number"],
+            "location_columns": ["ward"],
+            "context_columns": [],
+            "template_columns": ["form_number", "ward", "first_name", "last_name", "nid", "account_number"],
+            "header_aliases": {
+                "household identifier": "form_number",
+                "wallet account no": "account_number",
+            },
+        }
+        dataframe = pd.DataFrame([{
+            "Household Identifier": "F-100",
+            "ward": "Ward 1",
+            "first_name": "Alice",
+            "last_name": "Recipient",
+            "nid": "NID-100",
+            "Wallet Account No": "000100",
+        }])
+
+        with patch.object(IndividualConfig, "kyc_payment_details", config):
+            normalized = normalize_kyc_dataframe_headers(dataframe)
+            _validate_kyc_details_file(normalized)
+            template_columns = payment_details_template_columns()
+
+        self.assertIn("ward", normalized.columns)
+        self.assertEqual(normalized.loc[0, "account_number"], "000100")
+        self.assertEqual(template_columns, config["template_columns"])
+
+    def test_schema_uniqueness_skips_fields_absent_from_upload(self):
+        dataframe = pd.DataFrame([{"first_name": "Alice"}])
+        schema = json.dumps({
+            "properties": {
+                "national_id": {"type": "string", "uniqueness": True},
+            },
+        })
+
+        with patch.object(IndividualConfig, "individual_schema", schema), \
+                patch.object(IndividualImportService, "process_chunk", return_value=[]), \
+                patch.object(IndividualImportService, "save_validation_error_in_data_source_bulk"), \
+                patch("individual.services.fetch_summary_of_broken_items", return_value=[]):
+            validated, invalid = IndividualImportService(None)._validate_possible_individuals(
+                dataframe,
+                uuid.uuid4(),
+            )
+
+        self.assertEqual(validated, [])
+        self.assertEqual(invalid, [])
+
     def test_kyc_export_headers_normalize_to_upload_fields(self):
         dataframe = pd.DataFrame(columns=[
             "District",
@@ -139,6 +203,46 @@ class PaymentDetailsExcelLoaderTests(SimpleTestCase):
 
         self.assertEqual(dataframe.loc[0, "account_number"], "00012345")
 
+    def test_ods_preserves_text_account_number_and_marks_numeric_cell(self):
+        content = b'''<?xml version="1.0" encoding="UTF-8"?>
+        <office:document-content
+            xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+            xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0"
+            xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">
+          <office:body><office:spreadsheet>
+            <table:table table:name="Sheet1">
+              <table:table-row>
+                <table:table-cell office:value-type="string"><text:p>account_number</text:p></table:table-cell>
+              </table:table-row>
+              <table:table-row>
+                <table:table-cell office:value-type="string"><text:p>00012345</text:p></table:table-cell>
+              </table:table-row>
+              <table:table-row>
+                <table:table-cell office:value-type="float" office:value="12345"><text:p>12345</text:p></table:table-cell>
+              </table:table-row>
+            </table:table>
+          </office:spreadsheet></office:body>
+        </office:document-content>'''
+        file_buffer = BytesIO()
+        with zipfile.ZipFile(file_buffer, "w") as ods_file:
+            ods_file.writestr("content.xml", content)
+        file_buffer.seek(0)
+        dataframe = pd.DataFrame({"account_number": ["00012345", "12345"]})
+
+        result = _mark_numeric_ods_account_cells(dataframe, file_buffer)
+
+        self.assertEqual(result.loc[0, "account_number"], "00012345")
+        self.assertEqual(result.loc[1, "account_number"], INVALID_NUMERIC_EXCEL_CELL)
+
+        file_buffer.seek(0)
+        with patch(
+            "individual.services.pd.read_excel",
+            side_effect=[dataframe.copy(), dataframe.copy()],
+        ):
+            loaded = _load_ods_with_text_columns(file_buffer)
+        self.assertEqual(loaded.loc[0, "account_number"], "00012345")
+        self.assertEqual(loaded.loc[1, "account_number"], INVALID_NUMERIC_EXCEL_CELL)
+
 
 class PaymentDetailsImportTests(TestCase):
     @classmethod
@@ -220,6 +324,58 @@ class PaymentDetailsImportTests(TestCase):
         )
         self.assertEqual(sources[0].validations["validation_errors"], [])
         self.assertEqual(sources[0].validations["validation_warnings"][0]["field_name"], "first_name")
+
+    def test_primary_recipient_change_is_explained_in_validation_summary(self):
+        self.membership.json_ext = {"primary_worker": False}
+        self.membership.save(user=self.user)
+        proposed_recipient = Individual(
+            first_name="Bob",
+            last_name="New",
+            dob="1985-01-01",
+            json_ext={"national_id": "NID-002"},
+        )
+        proposed_recipient.save(user=self.user)
+        GroupIndividual(
+            group=self.group,
+            individual=proposed_recipient,
+            json_ext={"primary_worker": True},
+        ).save(user=self.user)
+        self.group.json_ext["validation_status"] = "VERIFIED"
+        self.group.save(user=self.user)
+        upload, sources = self._create_upload([{
+            "ID": str(proposed_recipient.id),
+            "nid": "NID-002",
+            "first_name": "Bob",
+            "last_name": "New",
+        }])
+
+        validated, invalid = self._validate(upload, sources)
+        sources[0].refresh_from_db()
+        summary = IndividualImportService._kyc_upload_summary(upload)
+
+        self.assertEqual(invalid, [])
+        change = validated[0]["validations"]["primary_recipient_change"]["details"]
+        self.assertEqual(change["current_recipient"]["id"], str(self.recipient.id))
+        self.assertEqual(change["proposed_recipient"]["id"], str(proposed_recipient.id))
+        self.assertEqual(summary["primary_recipient_changes"], [change])
+        self.assertEqual(
+            sources[0].validations["validation_warnings"][-1]["field_name"],
+            "primary_recipient",
+        )
+        upload_record = IndividualDataUploadRecords(
+            data_upload=upload,
+            workflow=KYC_DETAILS_WORKFLOW_NAME,
+            json_ext={},
+        )
+        upload_record.save(user=self.user)
+        with patch("tasks_management.services.TaskService.create") as create_task, patch.object(
+            IndividualTaskCreatorService,
+            "_IndividualTaskCreatorService__calculate_percentage_of_invalid_items",
+            return_value=0,
+        ):
+            IndividualTaskCreatorService(self.user)._create_task(upload.id, "test.event")
+        task_json_ext = create_task.call_args.args[0]["json_ext"]
+        self.assertEqual(task_json_ext["primary_recipient_changes"], [change])
 
     def test_kyc_upload_summary_reports_rows_ready_for_approval(self):
         upload, _ = self._create_upload([{}])

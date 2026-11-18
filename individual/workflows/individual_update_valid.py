@@ -150,6 +150,10 @@ BEGIN
                         'bank', COALESCE(
                             NULLIF(ids."Json_ext"->>'bank', ''),
                             individual_individual."Json_ext"->>'bank'
+                        ),
+                        'national_id', COALESCE(
+                            NULLIF(ids."Json_ext"->>'national_id', ''),
+                            individual_individual."Json_ext"->>'national_id'
                         )
                     ))
                 END

@@ -18,8 +18,8 @@ from core.views import check_user_rights
 from individual.apps import IndividualConfig
 from individual.data_source import (
     KYC_DETAILS_WORKFLOW_NAME,
-    PAYMENT_DETAILS_FIELDS,
-    PAYMENT_DETAILS_TEMPLATE_COLUMNS,
+    payment_details_fields,
+    payment_details_template_columns,
 )
 from individual.models import IndividualDataSource
 from individual.services import IndividualImportService
@@ -30,15 +30,17 @@ from workflow.services import WorkflowService
 logger = logging.getLogger(__name__)
 
 
-ALLOWED_EXTENSIONS = {".csv", ".xls", ".xlsx"}
+ALLOWED_EXTENSIONS = {".csv", ".xls", ".xlsx", ".ods"}
 ALLOWED_MIME_TYPES = {
     "text/csv",
     "application/vnd.ms-excel",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.oasis.opendocument.spreadsheet",
 }
 
 mimetypes.add_type("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx")
 mimetypes.add_type("application/vnd.ms-excel", ".xls")
+mimetypes.add_type("application/vnd.oasis.opendocument.spreadsheet", ".ods")
 
 
 def is_valid_file(import_file):
@@ -65,7 +67,7 @@ def get_global_schema_fields():
     schema_properties = set(schema.get('properties', {}).keys())
     # KYC identity/payment values have their own controlled workflow and
     # template; do not offer them in generic individual uploads.
-    schema_properties.difference_update(PAYMENT_DETAILS_FIELDS | {'nid'})
+    schema_properties.difference_update(payment_details_fields() | {'nid'})
     schema_properties.update(['recipient_info', 'individual_role', 'group_code'])
     return list(schema_properties)
 
@@ -76,7 +78,7 @@ def get_global_schema_fields():
 def download_template_file(request):
     try:
         if request.query_params.get("workflow_name") == KYC_DETAILS_WORKFLOW_NAME:
-            all_fields = PAYMENT_DETAILS_TEMPLATE_COLUMNS
+            all_fields = payment_details_template_columns()
         else:
             base_fields = IndividualConfig.individual_base_fields
             extra_fields = get_global_schema_fields()

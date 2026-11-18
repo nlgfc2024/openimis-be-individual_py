@@ -356,7 +356,10 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
             filters.append(Q(location_id__in=hotspot_village_ids))
 
         if kwargs.get("primary_recipient_only"):
-            filters.append(primary_worker_membership_filter("groupindividuals"))
+            filters.append(primary_worker_membership_filter(
+                "groupindividuals",
+                require_verified_individual=True,
+            ))
 
         benefit_plan_id = kwargs.get("benefitPlanId")
         if benefit_plan_id:
@@ -394,7 +397,9 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
         if kwargs.get("include_primary_recipient_data"):
             from location.models import MicroCatchmentGVH
 
-            primary_recipient_query = authoritative_primary_worker_memberships().filter(
+            primary_recipient_query = authoritative_primary_worker_memberships(
+                require_verified_individual=bool(kwargs.get("primary_recipient_only")),
+            ).filter(
                 group_id=OuterRef("pk"),
             ).order_by("id")
             primary_recipient_name_query = primary_recipient_query.annotate(

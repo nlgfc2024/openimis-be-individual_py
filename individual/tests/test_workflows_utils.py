@@ -1,7 +1,7 @@
 from django.test import TestCase
 from unittest.mock import patch
 from core.test_helpers import create_test_interactive_user
-from individual.data_source import PAYMENT_DETAILS_REQUIRED_COLUMNS
+from individual.data_source import payment_details_required_columns
 from individual.workflows.base_individual_update import _validate_kyc_details_file
 from individual.workflows.utils import (
     DataUpdateWorkflow,
@@ -145,7 +145,7 @@ class TestBasePythonWorkflowExecutor(TestCase):
             _validate_kyc_details_file(incomplete)
 
         empty_payment_details = pd.DataFrame([
-            {field: " " for field in PAYMENT_DETAILS_REQUIRED_COLUMNS}
+            {field: " " for field in payment_details_required_columns()}
         ])
         with self.assertRaisesRegex(
                 PythonWorkflowHandlerException,
@@ -153,7 +153,7 @@ class TestBasePythonWorkflowExecutor(TestCase):
             _validate_kyc_details_file(empty_payment_details)
 
     def test_kyc_details_upload_identifies_rows_with_missing_values(self):
-        complete_row = {field: "value" for field in PAYMENT_DETAILS_REQUIRED_COLUMNS}
+        complete_row = {field: "value" for field in payment_details_required_columns()}
         incomplete_row = {**complete_row, "account_number": ""}
 
         with self.assertRaisesRegex(
@@ -162,7 +162,7 @@ class TestBasePythonWorkflowExecutor(TestCase):
             _validate_kyc_details_file(pd.DataFrame([complete_row, incomplete_row]))
 
     def test_kyc_details_upload_accepts_complete_payment_row(self):
-        row = {field: "value" for field in PAYMENT_DETAILS_REQUIRED_COLUMNS}
+        row = {field: "value" for field in payment_details_required_columns()}
         row.update({
             "district": "Balaka",
             "ta": "Chanthunya",
@@ -173,7 +173,7 @@ class TestBasePythonWorkflowExecutor(TestCase):
         _validate_kyc_details_file(pd.DataFrame([row]))
 
     def test_kyc_details_upload_rejects_unexpected_columns(self):
-        row = {field: "value" for field in PAYMENT_DETAILS_REQUIRED_COLUMNS}
+        row = {field: "value" for field in payment_details_required_columns()}
         row["unexpected"] = "value"
         with self.assertRaisesRegex(PythonWorkflowHandlerException, "unsupported columns"):
             _validate_kyc_details_file(pd.DataFrame([row]))

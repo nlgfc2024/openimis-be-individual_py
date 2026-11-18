@@ -427,6 +427,43 @@ class IndividualGQLQueryTest(IndividualGQLTestCase):
         ]
         self.assertEqual(individual_uuids, [str(self.individual_a.uuid)])
 
+    def test_group_primary_recipient_export_requires_verified_individual(self):
+        self.group_individual_a.json_ext = {"primary_worker": True}
+        self.group_individual_a.save(username=self.admin_user.username)
+        self.group_a.json_ext = {**(self.group_a.json_ext or {}), "validation_status": "VERIFIED"}
+        self.group_a.save(username=self.admin_user.username)
+        self.individual_a.json_ext = {
+            **(self.individual_a.json_ext or {}),
+            "validation_status": "PENDING",
+        }
+        self.individual_a.save(username=self.admin_user.username)
+        query = f'''query {{
+          group(name: "{self.group_a.code}", primaryRecipientOnly: true) {{
+            edges {{ node {{ uuid }} }}
+          }}
+        }}'''
+
+        response = self.query(
+            query,
+            headers={"HTTP_AUTHORIZATION": f"Bearer {self.admin_token}"},
+        )
+        self.assertResponseNoErrors(response)
+        content = json.loads(response.content)
+        self.assertEqual(content["data"]["group"]["edges"], [])
+
+        self.individual_a.json_ext["validation_status"] = "VERIFIED"
+        self.individual_a.save(username=self.admin_user.username)
+        response = self.query(
+            query,
+            headers={"HTTP_AUTHORIZATION": f"Bearer {self.admin_token}"},
+        )
+        self.assertResponseNoErrors(response)
+        content = json.loads(response.content)
+        self.assertEqual(
+            [edge["node"]["uuid"] for edge in content["data"]["group"]["edges"]],
+            [str(self.group_a.uuid)],
+        )
+
     def test_group_query_household_filters(self):
         self.group_a.json_ext = {
             **(self.group_a.json_ext or {}),
@@ -437,6 +474,11 @@ class IndividualGQLQueryTest(IndividualGQLTestCase):
         self.group_individual_a.recipient_type = GroupIndividual.RecipientType.PRIMARY
         self.group_individual_a.json_ext = {"primary_worker": True}
         self.group_individual_a.save(username=self.admin_user.username)
+        self.individual_a.json_ext = {
+            **(self.individual_a.json_ext or {}),
+            "validation_status": "VERIFIED",
+        }
+        self.individual_a.save(username=self.admin_user.username)
 
         response = self.query(
             f'''query {{

@@ -8,77 +8,121 @@ from django.db.models.functions import Coalesce, NullIf
 DATA_SOURCE_FIELD = "data_source"
 DEFAULT_DATA_SOURCE = "ubr"
 KYC_DETAILS_WORKFLOW_NAME = "Python KYC Details"
-PAYMENT_DETAILS_FIELDS = {"account_number", "account_name", "bank"}
-PAYMENT_DETAILS_CONTEXT_COLUMNS = {
-    "district", "ta", "gvh", "village", "catchment", "gender", "phase_name",
-}
-PAYMENT_DETAILS_TEMPLATE_COLUMNS = [
-    "form_number",
-    "district",
-    "ta",
-    "gvh",
-    "village",
-    "catchment",
-    "first_name",
-    "last_name",
-    "nid",
-    "account_number",
-    "account_name",
-    "bank",
-]
-PAYMENT_DETAILS_REQUIRED_COLUMNS = {
-    "form_number",
-    "nid",
-    "first_name",
-    "last_name",
-    *PAYMENT_DETAILS_FIELDS,
-}
-PAYMENT_DETAILS_TEXT_FIELDS = {
-    "form_number",
-    "nid",
-    "account_number",
-    "account_name",
-    "bank",
+DEFAULT_KYC_PAYMENT_DETAILS_CONFIG = {
+    "payment_fields": ["account_number", "account_name", "bank"],
+    "location_columns": ["district", "ta", "gvh", "village"],
+    "context_columns": ["catchment", "gender", "phase_name"],
+    "template_columns": [
+        "form_number",
+        "district",
+        "ta",
+        "gvh",
+        "village",
+        "catchment",
+        "first_name",
+        "last_name",
+        "nid",
+        "account_number",
+        "account_name",
+        "bank",
+    ],
+    "header_aliases": {
+        "district": "district",
+        "district name": "district",
+        "ubr household form number": "form_number",
+        "form number": "form_number",
+        "traditional authority": "ta",
+        "traditional authority name": "ta",
+        "group village head": "gvh",
+        "group village head name": "gvh",
+        "village": "village",
+        "village name": "village",
+        "catchment": "catchment",
+        "catchment name": "catchment",
+        "first name": "first_name",
+        "last name": "last_name",
+        "full name": "full_name",
+        "gender": "gender",
+        "nid": "nid",
+        "national id": "nid",
+        "national identification number": "nid",
+        "date of birth": "dob",
+        "account number": "account_number",
+        "account name": "account_name",
+        "bank provider": "bank",
+        "bank": "bank",
+        "id": "ID",
+    },
 }
 
-KYC_HEADER_ALIASES = {
-    "district": "district",
-    "district name": "district",
-    "ubr household form number": "form_number",
-    "form number": "form_number",
-    "traditional authority": "ta",
-    "traditional authority name": "ta",
-    "group village head": "gvh",
-    "group village head name": "gvh",
-    "village": "village",
-    "village name": "village",
-    "catchment": "catchment",
-    "catchment name": "catchment",
-    "first name": "first_name",
-    "last name": "last_name",
-    "full name": "full_name",
-    "gender": "gender",
-    "nid": "nid",
-    "national id": "nid",
-    "national identification number": "nid",
-    "date of birth": "dob",
-    "account number": "account_number",
-    "account name": "account_name",
-    "bank provider": "bank",
-    "bank": "bank",
-    "id": "ID",
-}
+
+def get_kyc_payment_details_config():
+    from individual.apps import IndividualConfig
+
+    configured = IndividualConfig.kyc_payment_details or {}
+    config = {**DEFAULT_KYC_PAYMENT_DETAILS_CONFIG, **configured}
+    config["header_aliases"] = {
+        **DEFAULT_KYC_PAYMENT_DETAILS_CONFIG["header_aliases"],
+        **(configured.get("header_aliases") or {}),
+    }
+    return config
+
+
+def payment_details_fields():
+    return set(get_kyc_payment_details_config()["payment_fields"])
+
+
+def payment_details_location_columns():
+    return set(get_kyc_payment_details_config()["location_columns"])
+
+
+def payment_details_context_columns():
+    config = get_kyc_payment_details_config()
+    return payment_details_location_columns() | set(config["context_columns"])
+
+
+def payment_details_template_columns():
+    return list(get_kyc_payment_details_config()["template_columns"])
+
+
+def payment_details_required_columns():
+    return {
+        "form_number",
+        "nid",
+        "first_name",
+        "last_name",
+        *payment_details_fields(),
+    }
+
+
+def payment_details_text_fields():
+    return {
+        "form_number",
+        "nid",
+        "account_number",
+        "account_name",
+        "bank",
+        *payment_details_fields(),
+    }
 
 
 def has_payment_details_columns(columns):
-    return bool(PAYMENT_DETAILS_FIELDS.intersection(columns))
+    return bool(payment_details_fields().intersection(columns))
+
+
+def _normalized_header_aliases():
+    return {
+        re.sub(r"[^a-z0-9]+", " ", str(alias).casefold()).strip(): target
+        for alias, target in get_kyc_payment_details_config()["header_aliases"].items()
+    }
 
 
 def normalize_kyc_header(header):
     cleaned = str(header).lstrip("\ufeff").strip()
     normalized = re.sub(r"[^a-z0-9]+", " ", cleaned.casefold()).strip()
-    if normalized in KYC_HEADER_ALIASES:
-        return KYC_HEADER_ALIASES[normalized]
+    aliases = _normalized_header_aliases()
+    if normalized in aliases:
+        return aliases[normalized]
     return cleaned
 
 

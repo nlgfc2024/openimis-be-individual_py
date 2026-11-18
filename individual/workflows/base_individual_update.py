@@ -5,8 +5,8 @@ import pandas as pd
 from core.models import User
 from individual.data_source import (
     KYC_DETAILS_WORKFLOW_NAME,
-    PAYMENT_DETAILS_CONTEXT_COLUMNS,
-    PAYMENT_DETAILS_REQUIRED_COLUMNS,
+    payment_details_context_columns,
+    payment_details_required_columns,
 )
 from individual.models import IndividualDataUploadRecords
 from individual.services import IndividualImportService
@@ -43,7 +43,8 @@ def _process_update_workflow(
 
 
 def _validate_kyc_details_file(dataframe):
-    missing_columns = PAYMENT_DETAILS_REQUIRED_COLUMNS - set(dataframe.columns)
+    required_columns = payment_details_required_columns()
+    missing_columns = required_columns - set(dataframe.columns)
     if missing_columns:
         raise PythonWorkflowHandlerException(
             "KYC upload is missing required columns: {}. Recognized columns: {}. "
@@ -54,8 +55,8 @@ def _validate_kyc_details_file(dataframe):
         )
 
     allowed_columns = (
-        PAYMENT_DETAILS_REQUIRED_COLUMNS
-        | PAYMENT_DETAILS_CONTEXT_COLUMNS
+        required_columns
+        | payment_details_context_columns()
         | {"dob", "id", "ID"}
     )
     unexpected_columns = set(dataframe.columns) - allowed_columns
@@ -73,7 +74,7 @@ def _validate_kyc_details_file(dataframe):
     for row_number, (_, row) in enumerate(dataframe.iterrows(), start=2):
         missing_fields = [
             field
-            for field in sorted(PAYMENT_DETAILS_REQUIRED_COLUMNS)
+            for field in sorted(required_columns)
             for value in [row.get(field)]
             if pd.isna(value) or not str(value).strip()
         ]

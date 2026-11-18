@@ -1,5 +1,6 @@
 import os
 import json
+import csv
 from unittest.mock import patch, MagicMock
 from rest_framework.test import APITestCase
 from rest_framework import status
@@ -10,6 +11,7 @@ from django.utils import timezone
 from core.test_helpers import create_test_interactive_user
 from core.models import ModuleConfiguration
 from individual.apps import IndividualConfig
+from individual.views import is_valid_file
 
 
 class TestView(APITestCase):
@@ -34,6 +36,18 @@ class TestView(APITestCase):
         self.admin_user = create_test_interactive_user()
         self.client.force_authenticate(user=self.admin_user)
 
+    def test_ods_upload_is_an_allowed_spreadsheet(self):
+        uploaded_file = SimpleUploadedFile(
+            "accounts.ods",
+            b"ods-content",
+            content_type="application/vnd.oasis.opendocument.spreadsheet",
+        )
+
+        valid, error = is_valid_file(uploaded_file)
+
+        self.assertTrue(valid)
+        self.assertIsNone(error)
+
     def test_download_template_file(self):
         response = self.client.get(self.download_url)
 
@@ -46,12 +60,17 @@ class TestView(APITestCase):
 
         expected_base_csv_header = 'first_name,last_name,dob,location_name,location_code,id'
         content = b"".join(response.streaming_content).decode('utf-8')
-        self.assertTrue(
-            expected_base_csv_header in content,
-            f'Expect csv template header to contain {expected_base_csv_header}, but got {content}'
+        header = next(csv.reader(content.splitlines()))
+        expected_base_fields = [
+            'first_name', 'last_name', 'dob', 'location_name', 'location_code', 'id',
+        ]
+        self.assertEqual(
+            header[:len(expected_base_fields)],
+            expected_base_fields,
+            f'Expect csv template header to contain {expected_base_csv_header}, but got {content}',
         )
         for kyc_only_column in ('nid', 'account_number', 'account_name', 'bank'):
-            self.assertNotIn(kyc_only_column, content)
+            self.assertNotIn(kyc_only_column, header)
 
     def test_download_kyc_details_template_file(self):
         response = self.client.get(
@@ -65,11 +84,10 @@ class TestView(APITestCase):
             response['Content-Disposition'],
         )
         content = b"".join(response.streaming_content).decode('utf-8')
-        self.assertEqual(
-            content.splitlines()[0],
-            "form_number,district,ta,gvh,village,catchment,first_name,last_name,nid,"
-            "account_number,account_name,bank",
-        )
+        self.assertEqual(next(csv.reader(content.splitlines())), [
+            "form_number", "district", "ta", "gvh", "village", "catchment",
+            "first_name", "last_name", "nid", "account_number", "account_name", "bank",
+        ])
 
     def test_download_template_file_on_individual_schema_update(self):
         with open(self.test_config_path, 'rb') as test_file:
@@ -84,9 +102,11 @@ class TestView(APITestCase):
 
         # Check the template file contains individual schema fields from fixture config
         content = b"".join(response.streaming_content).decode('utf-8')
+        header = next(csv.reader(content.splitlines()))
         for expected_column in ('poor', 'educated_level', 'number_of_children'):
-            self.assertTrue(
-                expected_column in content,
+            self.assertIn(
+                expected_column,
+                header,
                 f'Expect csv template header to contain {expected_column}, but got {content}'
             )
 

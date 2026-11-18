@@ -13,9 +13,9 @@ from core.models import User
 from individual.apps import IndividualConfig
 from individual.data_source import (
     DATA_SOURCE_FIELD,
-    PAYMENT_DETAILS_FIELDS,
-    PAYMENT_DETAILS_REQUIRED_COLUMNS,
     has_payment_details_columns,
+    payment_details_fields,
+    payment_details_required_columns,
 )
 from individual.models import IndividualDataSource
 from individual.services import IndividualImportService
@@ -59,7 +59,9 @@ class BasePythonWorkflowExecutor(metaclass=ABCMeta):
         df_headers = set(self.df.columns)
         schema_properties = set(self.schema.get('properties', {}).keys())
         schema_properties.update(['recipient_info', 'group_code', 'individual_role', DATA_SOURCE_FIELD])
-        payment_detail_columns = PAYMENT_DETAILS_FIELDS | {'nid'}
+        payment_fields = payment_details_fields()
+        required_payment_columns = payment_details_required_columns()
+        payment_detail_columns = payment_fields | {'nid'}
         supplied_payment_columns = payment_detail_columns.intersection(df_headers)
         if supplied_payment_columns and not allow_payment_details:
             raise PythonWorkflowHandlerException(
@@ -68,12 +70,12 @@ class BasePythonWorkflowExecutor(metaclass=ABCMeta):
                 )
             )
         if allow_payment_details:
-            schema_properties.update(PAYMENT_DETAILS_REQUIRED_COLUMNS)
+            schema_properties.update(required_payment_columns)
         payment_details_update = has_payment_details_columns(df_headers) and any(
             self.df[field].map(
                 lambda value: value is not None and not pd.isna(value) and bool(str(value).strip())
             ).any()
-            for field in PAYMENT_DETAILS_FIELDS
+            for field in payment_fields
             if field in df_headers
         )
         if payment_details_update and not is_update:
@@ -83,7 +85,7 @@ class BasePythonWorkflowExecutor(metaclass=ABCMeta):
 
         if payment_details_update:
             required_headers = set(IndividualConfig.individual_base_fields)
-            required_headers.update(PAYMENT_DETAILS_REQUIRED_COLUMNS)
+            required_headers.update(required_payment_columns)
             required_headers.add('ID')
         else:
             required_headers = set(IndividualConfig.individual_base_fields)
