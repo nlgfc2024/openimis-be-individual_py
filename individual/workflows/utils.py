@@ -6,11 +6,17 @@ import logging
 from abc import ABCMeta, abstractmethod
 from typing import Iterable
 
+import pandas as pd
 from django.db import ProgrammingError, connection
 
 from core.models import User
 from individual.apps import IndividualConfig
-from individual.data_source import DATA_SOURCE_FIELD
+from individual.data_source import (
+    DATA_SOURCE_FIELD,
+    has_payment_details_columns,
+    payment_details_fields,
+    payment_details_required_columns,
+)
 from individual.models import IndividualDataSource
 from individual.services import IndividualImportService
 from individual.utils import load_dataframe
@@ -42,7 +48,7 @@ class BasePythonWorkflowExecutor(metaclass=ABCMeta):
                         "It'll be removed from upload.")
         return df
 
-    def validate_dataframe_headers(self, is_update=False):
+    def validate_dataframe_headers(self, is_update=False, allow_payment_details=False):
         """
         Validates if DataFrame headers:
         1. Are included in the JSON schema properties.
@@ -53,7 +59,36 @@ class BasePythonWorkflowExecutor(metaclass=ABCMeta):
         df_headers = set(self.df.columns)
         schema_properties = set(self.schema.get('properties', {}).keys())
         schema_properties.update(['recipient_info', 'group_code', 'individual_role', DATA_SOURCE_FIELD])
-        required_headers = set(IndividualConfig.individual_base_fields)
+        payment_fields = payment_details_fields()
+        required_payment_columns = payment_details_required_columns()
+        payment_detail_columns = payment_fields | {'nid'}
+        supplied_payment_columns = payment_detail_columns.intersection(df_headers)
+        if supplied_payment_columns and not allow_payment_details:
+            raise PythonWorkflowHandlerException(
+                "Payment detail columns are only allowed through the Python KYC Details workflow: {}".format(
+                    ", ".join(sorted(supplied_payment_columns)),
+                )
+            )
+        if allow_payment_details:
+            schema_properties.update(required_payment_columns)
+        payment_details_update = has_payment_details_columns(df_headers) and any(
+            self.df[field].map(
+                lambda value: value is not None and not pd.isna(value) and bool(str(value).strip())
+            ).any()
+            for field in payment_fields
+            if field in df_headers
+        )
+        if payment_details_update and not is_update:
+            raise PythonWorkflowHandlerException(
+                "Payment details can only be uploaded through the Python KYC Details workflow."
+            )
+
+        if payment_details_update:
+            required_headers = set(IndividualConfig.individual_base_fields)
+            required_headers.update(required_payment_columns)
+            required_headers.add('ID')
+        else:
+            required_headers = set(IndividualConfig.individual_base_fields)
         if is_update:
             required_headers.add('ID')
 
@@ -170,9 +205,15 @@ class DataUploadWorkflow(MakerCheckerPythonWorkflowExecutor):
 
 class DataUpdateWorkflow(MakerCheckerPythonWorkflowExecutor):
 
-    def __init__(self, upload_uuid, user_uuid, import_service=IndividualImportService):
+    def __init__(
+            self,
+            upload_uuid,
+            user_uuid,
+            import_service=IndividualImportService,
+            require_approval=False):
         super().__init__(upload_uuid, user_uuid)
         self.import_service = import_service(self.user)
+        self.require_approval = require_approval
 
     @property
     def should_create_task(self):
@@ -183,4 +224,10 @@ class DataUpdateWorkflow(MakerCheckerPythonWorkflowExecutor):
         return validation_response['summary_invalid_items'] or True  # Replace this with config check
 
     def _create_task_function(self):
-        self.import_service.create_task_with_update_valid_items(self.upload_uuid)
+        if self.require_approval:
+            self.import_service.create_task_with_update_valid_items(
+                self.upload_uuid,
+                force_maker_checker=True,
+            )
+        else:
+            self.import_service.create_task_with_update_valid_items(self.upload_uuid)

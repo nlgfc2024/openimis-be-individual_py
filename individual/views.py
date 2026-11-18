@@ -16,6 +16,11 @@ from rest_framework.response import Response
 from core.utils import DefaultStorageFileHandler
 from core.views import check_user_rights
 from individual.apps import IndividualConfig
+from individual.data_source import (
+    KYC_DETAILS_WORKFLOW_NAME,
+    payment_details_fields,
+    payment_details_template_columns,
+)
 from individual.models import IndividualDataSource
 from individual.services import IndividualImportService
 
@@ -25,15 +30,17 @@ from workflow.services import WorkflowService
 logger = logging.getLogger(__name__)
 
 
-ALLOWED_EXTENSIONS = {".csv", ".xls", ".xlsx"}
+ALLOWED_EXTENSIONS = {".csv", ".xls", ".xlsx", ".ods"}
 ALLOWED_MIME_TYPES = {
     "text/csv",
     "application/vnd.ms-excel",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.oasis.opendocument.spreadsheet",
 }
 
 mimetypes.add_type("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx")
 mimetypes.add_type("application/vnd.ms-excel", ".xls")
+mimetypes.add_type("application/vnd.oasis.opendocument.spreadsheet", ".ods")
 
 
 def is_valid_file(import_file):
@@ -58,6 +65,9 @@ def get_global_schema_fields():
     schema = json.loads(IndividualConfig.individual_schema)
     # Extract property keys and add additional fields specific to individuals
     schema_properties = set(schema.get('properties', {}).keys())
+    # KYC identity/payment values have their own controlled workflow and
+    # template; do not offer them in generic individual uploads.
+    schema_properties.difference_update(payment_details_fields() | {'nid'})
     schema_properties.update(['recipient_info', 'individual_role', 'group_code'])
     return list(schema_properties)
 
@@ -67,10 +77,12 @@ def get_global_schema_fields():
 @permission_classes([check_user_rights(IndividualConfig.gql_individual_create_perms)])
 def download_template_file(request):
     try:
-        # Base fields and extra fields required in the template
-        base_fields = IndividualConfig.individual_base_fields
-        extra_fields = get_global_schema_fields()
-        all_fields = list(dict.fromkeys(base_fields + extra_fields))
+        if request.query_params.get("workflow_name") == KYC_DETAILS_WORKFLOW_NAME:
+            all_fields = payment_details_template_columns()
+        else:
+            base_fields = IndividualConfig.individual_base_fields
+            extra_fields = get_global_schema_fields()
+            all_fields = list(dict.fromkeys(base_fields + extra_fields))
 
         # Create an empty DataFrame with the required fields
         template_df = pd.DataFrame(columns=all_fields)
@@ -84,7 +96,12 @@ def download_template_file(request):
         response = StreamingHttpResponse(
             stream_csv(), content_type='text/csv'
         )
-        response['Content-Disposition'] = 'attachment; filename="individual_upload_template.csv"'
+        template_name = (
+            "individual_kyc_details_template.csv"
+            if request.query_params.get("workflow_name") == KYC_DETAILS_WORKFLOW_NAME
+            else "individual_upload_template.csv"
+        )
+        response['Content-Disposition'] = f'attachment; filename="{template_name}"'
         return response
     except Exception as exc:
         # Log unexpected errors and return a 500 response
@@ -97,6 +114,7 @@ def download_template_file(request):
 @permission_classes([check_user_rights(IndividualConfig.gql_individual_create_perms)])
 def import_individuals(request):
     import_file = None
+    file_saved = False
     try:
         user = request.user
         # Resolve the arguments and handle file upload
@@ -107,18 +125,26 @@ def import_individuals(request):
             return Response({'success': False, 'error': error_message}, status=status.HTTP_400_BAD_REQUEST)
 
         _handle_file_upload(import_file)
+        file_saved = True
         # Import individual data using the service
         result = IndividualImportService(user).import_individuals(import_file, workflow, group_aggregation_column)
 
-        # If the import was unsuccessful, raise an error
+        # A workflow failure is retained in upload history for correction;
+        # failures before an upload record exists remove the temporary file.
         if not result.get('success'):
-            raise ValueError('{}: {}'.format(result.get("message"), result.get("details")))
+            if not result.get('data', {}).get('upload_uuid'):
+                _remove_file(import_file)
+            result = {
+                **result,
+                'error': result.get('error') or result.get('details') or result.get('message'),
+            }
+            return Response(result, status=status.HTTP_400_BAD_REQUEST)
 
         # Return the result of the import
         return Response(result)
     except ValueError as e:
         # Remove the file and log the error if a value error occurs
-        if import_file:
+        if import_file and file_saved:
             _remove_file(import_file)
         logger.error("Error while uploading individuals", exc_info=e)
         return Response({'success': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)

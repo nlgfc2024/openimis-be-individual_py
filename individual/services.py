@@ -1,10 +1,15 @@
 import logging
 import json
+import re
 import uuid
+import zipfile
+from xml.etree import ElementTree
 import pandas as pd
 from pandas import DataFrame
 from django.core.files.uploadedfile import InMemoryUploadedFile
 from django.db import transaction
+from django.db.models import Prefetch
+from openpyxl import load_workbook
 
 from calculation.services import get_calculation_object
 from core.models import User
@@ -14,7 +19,15 @@ from django.apps import apps
 # from django.utils.translation import gettext as _
 from django.db.models import Q, Count
 from individual.apps import IndividualConfig
-from individual.data_source import DATA_SOURCE_FIELD
+from individual.data_source import (
+    DATA_SOURCE_FIELD,
+    KYC_DETAILS_WORKFLOW_NAME,
+    has_payment_details_columns,
+    normalize_kyc_dataframe_headers,
+    normalize_kyc_header,
+    payment_details_fields,
+    payment_details_text_fields,
+)
 from individual.models import (
     Individual,
     IndividualDataSource,
@@ -41,8 +54,188 @@ from tasks_management.models import Task
 from tasks_management.services import UpdateCheckerLogicServiceMixin, CreateCheckerLogicServiceMixin, \
     crud_business_data_builder, DeleteCheckerLogicServiceMixin
 from workflow.systems.base import WorkflowHandler
+from individual.primary_recipients import (
+    authoritative_primary_worker_memberships,
+    primary_worker_membership_filter,
+)
 
 logger = logging.getLogger(__name__)
+
+SCIENTIFIC_NOTATION = re.compile(r"^[+-]?\d+(?:\.\d+)?[eE][+-]?\d+$")
+DECIMAL_ACCOUNT_NUMBER = re.compile(r"^\d+\.\d+$")
+INVALID_NUMERIC_EXCEL_CELL = "__INVALID_NUMERIC_EXCEL_CELL__"
+
+
+def _import_text(value):
+    if value is None or pd.isna(value):
+        return ""
+    return str(value).strip()
+
+
+def _normalize_import_text(value):
+    return " ".join(_import_text(value).split()).casefold()
+
+
+def _has_import_value(value):
+    return bool(_import_text(value))
+
+
+def _recipient_identity_summary(individual, national_id=None):
+    return {
+        "id": str(individual.id),
+        "name": " ".join(
+            value for value in (individual.first_name, individual.last_name) if value
+        ),
+        "national_id": national_id or (individual.json_ext or {}).get("national_id"),
+    }
+
+
+def _load_xlsx_with_text_columns(import_file):
+    dataframe = _load_with_text_columns(pd.read_excel, import_file)
+    import_file.seek(0)
+    workbook = load_workbook(import_file, read_only=True, data_only=True)
+    # pandas reads the first worksheet by default; inspect that same worksheet
+    # when detecting account numbers that Excel stored as numeric values.
+    worksheet = workbook.worksheets[0]
+    header = [cell.value for cell in next(worksheet.iter_rows(min_row=1, max_row=1), ())]
+    try:
+        account_number_column = next(
+            index for index, value in enumerate(header)
+            if normalize_kyc_header(value) == "account_number"
+        )
+    except (StopIteration, ValueError):
+        workbook.close()
+        import_file.seek(0)
+        return dataframe
+
+    dataframe_account_column = dataframe.columns[account_number_column]
+    for row_index, cells in enumerate(worksheet.iter_rows(min_row=2), start=0):
+        cell = cells[account_number_column] if account_number_column < len(cells) else None
+        if cell and cell.value is not None and cell.data_type not in {"s", "inlineStr"}:
+            dataframe.at[row_index, dataframe_account_column] = INVALID_NUMERIC_EXCEL_CELL
+    workbook.close()
+    import_file.seek(0)
+    return dataframe
+
+
+def _load_xls_with_text_columns(import_file):
+    dataframe = _load_with_text_columns(pd.read_excel, import_file)
+    if any(normalize_kyc_header(column) == "account_number" for column in dataframe.columns):
+        import xlrd
+
+        import_file.seek(0)
+        workbook = xlrd.open_workbook(file_contents=import_file.read(), on_demand=True)
+        worksheet = workbook.sheet_by_index(0)
+        header = worksheet.row_values(0)
+        try:
+            account_number_column = next(
+                index for index, value in enumerate(header)
+                if normalize_kyc_header(value) == "account_number"
+            )
+        except (StopIteration, ValueError):
+            workbook.release_resources()
+            import_file.seek(0)
+            return dataframe
+        account_number_text_type = xlrd.XL_CELL_TEXT
+        for row_index in range(1, worksheet.nrows):
+            cell = worksheet.cell(row_index, account_number_column)
+            if cell.ctype not in {xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK, account_number_text_type}:
+                dataframe.at[row_index - 1, dataframe.columns[account_number_column]] = INVALID_NUMERIC_EXCEL_CELL
+        workbook.release_resources()
+        import_file.seek(0)
+    return dataframe
+
+
+def _ods_cell_at_column(row, column_index):
+    table_namespace = "urn:oasis:names:tc:opendocument:xmlns:table:1.0"
+    cell_tags = {
+        f"{{{table_namespace}}}table-cell",
+        f"{{{table_namespace}}}covered-table-cell",
+    }
+    offset = 0
+    for cell in row:
+        if cell.tag not in cell_tags:
+            continue
+        repeat = int(cell.get(f"{{{table_namespace}}}number-columns-repeated", "1"))
+        if offset <= column_index < offset + repeat:
+            return cell
+        offset += repeat
+    return None
+
+
+def _mark_numeric_ods_account_cells(dataframe, import_file):
+    table_namespace = "urn:oasis:names:tc:opendocument:xmlns:table:1.0"
+    office_namespace = "urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+    text_namespace = "urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+    namespaces = {
+        "table": table_namespace,
+        "office": office_namespace,
+        "text": text_namespace,
+    }
+    import_file.seek(0)
+    with zipfile.ZipFile(import_file) as ods_file:
+        root = ElementTree.fromstring(ods_file.read("content.xml"))
+
+    table = root.find(".//table:table", namespaces)
+    if table is None:
+        import_file.seek(0)
+        return dataframe
+    rows = table.findall("./table:table-row", namespaces)
+    if not rows:
+        import_file.seek(0)
+        return dataframe
+
+    header_row = rows[0]
+    account_number_column = None
+    column_index = 0
+    for cell in header_row:
+        if cell.tag not in {
+            f"{{{table_namespace}}}table-cell",
+            f"{{{table_namespace}}}covered-table-cell",
+        }:
+            continue
+        repeat = int(cell.get(f"{{{table_namespace}}}number-columns-repeated", "1"))
+        text = " ".join(
+            part.text or ""
+            for part in cell.findall(".//text:p", namespaces)
+        ).strip()
+        if normalize_kyc_header(text) == "account_number":
+            account_number_column = column_index
+            break
+        column_index += repeat
+
+    if account_number_column is None or account_number_column >= len(dataframe.columns):
+        import_file.seek(0)
+        return dataframe
+
+    dataframe_column = dataframe.columns[account_number_column]
+    dataframe_row = 0
+    for row in rows[1:]:
+        repeat_rows = int(row.get(f"{{{table_namespace}}}number-rows-repeated", "1"))
+        cell = _ods_cell_at_column(row, account_number_column)
+        if cell is not None:
+            value_type = cell.get(f"{{{office_namespace}}}value-type")
+            has_value = bool(
+                cell.get(f"{{{office_namespace}}}value")
+                or any(
+                    (paragraph.text or "").strip()
+                    for paragraph in cell.findall(".//text:p", namespaces)
+                )
+            )
+            if value_type in {"float", "currency", "percentage"} and has_value:
+                for row_index in range(dataframe_row, min(dataframe_row + repeat_rows, len(dataframe))):
+                    dataframe.at[row_index, dataframe_column] = INVALID_NUMERIC_EXCEL_CELL
+        dataframe_row += repeat_rows
+        if dataframe_row >= len(dataframe):
+            break
+    import_file.seek(0)
+    return dataframe
+
+
+def _load_ods_with_text_columns(import_file):
+    dataframe = _load_with_text_columns(pd.read_excel, import_file)
+    return _mark_numeric_ods_account_cells(dataframe, import_file)
+
 
 class IndividualService(BaseService, UpdateCheckerLogicServiceMixin, DeleteCheckerLogicServiceMixin):
     @register_service_signal('individual_service.create')
@@ -488,14 +681,18 @@ def _text_columns():
         name for name, field in (schema.get("properties") or {}).items()
         if isinstance(field, dict) and field.get("type") == "string"
     }
-    return declared | {"location_code"}
+    return declared | {"location_code"} | payment_details_text_fields()
 
 
 def _load_with_text_columns(read, import_file):
     """Loads with pandas' inference, then re-reads the text columns as written: only an empty cell is
     missing there, so codes like "NA" or "NULL" aren't lost. Other columns keep pandas' defaults."""
     dataframe = read(import_file)
-    text_columns = [column for column in dataframe.columns if column in _text_columns()]
+    text_fields = payment_details_text_fields()
+    text_columns = [
+        column for column in dataframe.columns
+        if column in _text_columns() or normalize_kyc_header(column) in text_fields
+    ]
     if text_columns:
         import_file.seek(0)
         text = read(import_file, usecols=text_columns, dtype=str, keep_default_na=False, na_values=[""])
@@ -509,11 +706,11 @@ class IndividualImportService:
         'text/csv': lambda f: _load_with_text_columns(pd.read_csv, f),
         # .xlsx
         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
-            lambda f: _load_with_text_columns(pd.read_excel, f),
+            _load_xlsx_with_text_columns,
         # .xls
-        'application/vnd.ms-excel': lambda f: _load_with_text_columns(pd.read_excel, f),
+        'application/vnd.ms-excel': _load_xls_with_text_columns,
         # .ods
-        'application/vnd.oasis.opendocument.spreadsheet': lambda f: _load_with_text_columns(pd.read_excel, f),
+        'application/vnd.oasis.opendocument.spreadsheet': _load_ods_with_text_columns,
     }
 
     def __init__(self, user):
@@ -525,16 +722,87 @@ class IndividualImportService:
                            import_file: InMemoryUploadedFile,
                            workflow: WorkflowHandler,
                            group_aggregation_column: str):
-        upload = self._save_sources(import_file)
+        upload = self._save_sources(
+            import_file,
+            normalize_kyc_headers=workflow.name == KYC_DETAILS_WORKFLOW_NAME,
+        )
         self._create_individual_data_upload_records(workflow, upload, group_aggregation_column)
         self._trigger_workflow(workflow, upload)
-        return {'success': True, 'data': {'upload_uuid': upload.uuid}}
+        upload.refresh_from_db()
+        if upload.status == IndividualDataSourceUpload.Status.FAIL:
+            return {
+                'success': False,
+                'message': 'The upload workflow failed.',
+                'error': upload.error,
+                'data': {
+                    'upload_uuid': str(upload.uuid),
+                    'status': upload.status,
+                },
+            }
+        data = {'upload_uuid': str(upload.uuid)}
+        if workflow.name == KYC_DETAILS_WORKFLOW_NAME:
+            data['summary'] = self._kyc_upload_summary(upload)
+        return {'success': True, 'data': data}
+
+    @staticmethod
+    def _kyc_upload_summary(upload):
+        """Return immediate KYC metrics; approval is still required to save them."""
+        sources = list(
+            IndividualDataSource.objects.filter(upload=upload, is_deleted=False).values(
+                "json_ext", "validations",
+            )
+        )
+        invalid_sources = [
+            source for source in sources
+            if (source.get("validations") or {}).get("validation_errors")
+        ]
+
+        def has_value(source, field):
+            value = (source.get("json_ext") or {}).get(field)
+            return bool(_import_text(value))
+
+        return {
+            "rows_read": len(sources),
+            "records_ready_for_approval": len(sources) - len(invalid_sources),
+            "records_rejected": len(invalid_sources),
+            "primary_recipients_matched": sum(has_value(source, "ID") for source in sources),
+            "primary_recipient_changes":
+                IndividualImportService._primary_recipient_changes_from_sources(sources),
+            "payment_accounts_submitted": sum(
+                has_value(source, "account_number") for source in sources
+            ),
+            "national_ids_submitted": sum(has_value(source, "nid") for source in sources),
+            "errors": len(invalid_sources),
+            "status": upload.status,
+        }
+
+    @staticmethod
+    def _primary_recipient_changes_from_sources(sources):
+        changes = []
+        seen = set()
+        for source in sources:
+            validations = source.get("validations") or {}
+            for warning in validations.get("validation_warnings") or []:
+                details = warning.get("details")
+                if warning.get("field_name") != "primary_recipient" or not details:
+                    continue
+                key = (
+                    details.get("form_number"),
+                    (details.get("current_recipient") or {}).get("id"),
+                    (details.get("proposed_recipient") or {}).get("id"),
+                )
+                if key not in seen:
+                    seen.add(key)
+                    changes.append(details)
+        return changes
 
     @transaction.atomic
-    def _save_sources(self, import_file):
+    def _save_sources(self, import_file, normalize_kyc_headers=False):
         # Method separated as workflow execution must be independent of the atomic transaction.
         upload = self._create_upload_entry(import_file.name)
         dataframe = self._load_import_file(import_file)
+        if normalize_kyc_headers:
+            dataframe = normalize_kyc_dataframe_headers(dataframe)
         self._validate_dataframe(dataframe)
         self._save_data_source(dataframe, upload)
         return upload
@@ -556,6 +824,17 @@ class IndividualImportService:
         )
         return {'success': True, 'data': validated_dataframe, 'summary_invalid_items': invalid_items}
 
+    def validate_payment_details_upload(self, upload_id):
+        sources = list(IndividualDataSource.objects.filter(upload_id=upload_id, is_deleted=False))
+        if not any(
+            has_payment_details_columns((source.json_ext or {}).keys())
+            for source in sources
+        ):
+            return
+        dataframe = load_dataframe(sources)
+        validated_dataframe, _ = self._validate_possible_individuals(dataframe, upload_id)
+        return validated_dataframe
+
     def synchronize_data_for_reporting(self, upload_id: uuid):
         if 'opensearch_reports' in apps.app_configs:
             from individual.documents import IndividualDocument
@@ -565,6 +844,39 @@ class IndividualImportService:
                 return
 
             IndividualDocument().update(individuals, 'index')
+
+    def synchronize_kyc_primary_recipients(self, upload_id: uuid, accepted=None):
+        """Align approved KYC recipients with the validated primary worker."""
+        recipient_ids = []
+        sources = IndividualDataSource.objects.filter(upload_id=upload_id, is_deleted=False)
+        if isinstance(accepted, list):
+            sources = sources.filter(id__in=accepted)
+        for source in sources:
+            if (source.validations or {}).get("validation_errors"):
+                continue
+            recipient_id = (source.json_ext or {}).get("ID")
+            try:
+                recipient_ids.append(uuid.UUID(str(recipient_id)))
+            except (TypeError, ValueError, AttributeError):
+                continue
+
+        if not recipient_ids:
+            return
+
+        memberships = authoritative_primary_worker_memberships().filter(
+            individual_id__in=recipient_ids,
+        ).select_related("group")
+        alignment_service = GroupAndGroupIndividualAlignmentService(self.user)
+        for membership in memberships:
+            if membership.recipient_type != GroupIndividual.RecipientType.PRIMARY:
+                alignment_service.handle_primary_recipient_change(
+                    membership.id,
+                    GroupIndividual.RecipientType.PRIMARY,
+                    membership.group_id,
+                )
+                membership.recipient_type = GroupIndividual.RecipientType.PRIMARY
+                membership.save(user=self.user)
+                alignment_service.update_json_ext_for_group(membership.group)
 
     @staticmethod
     def process_chunk(
@@ -608,7 +920,10 @@ class IndividualImportService:
         schema_dict = json.loads(IndividualConfig.individual_schema)
         properties = schema_dict.get("properties", {})
 
-        unique_fields = [field for field, props in properties.items() if "uniqueness" in props]
+        unique_fields = [
+            field for field, props in properties.items()
+            if "uniqueness" in props and field in dataframe.columns
+        ]
         unique_validations = {}
         if unique_fields:
             unique_validations = {
@@ -637,9 +952,241 @@ class IndividualImportService:
             duplicate_village_name_code_tuples,
         )
 
+        self._validate_payment_details_rows(dataframe, validated_dataframe)
         self.save_validation_error_in_data_source_bulk(validated_dataframe)
         invalid_items = fetch_summary_of_broken_items(upload_id)
         return validated_dataframe, invalid_items
+
+    def _validate_payment_details_rows(self, dataframe, validated_dataframe):
+        if not has_payment_details_columns(dataframe.columns):
+            return
+
+        payment_fields = sorted(payment_details_fields())
+        rows_by_form_number = {}
+        raw_form_numbers = set()
+        for field_validation in validated_dataframe:
+            row = field_validation["row"]
+            if not any(_has_import_value(row.get(field)) for field in payment_fields):
+                continue
+            form_number = _import_text(row.get("form_number"))
+            if form_number:
+                normalized_form_number = _normalize_import_text(form_number)
+                rows_by_form_number.setdefault(normalized_form_number, []).append(field_validation)
+                raw_form_numbers.add(form_number)
+
+        matches_by_form_number = self._find_payment_details_recipients(raw_form_numbers)
+        matched_groups = {
+            group.id: group
+            for matches in matches_by_form_number.values()
+            for group, recipient in matches
+            if group is not None and recipient is not None
+        }
+        current_primary_by_group = {
+            membership.group_id: membership
+            for membership in GroupIndividual.objects.filter(
+                group_id__in=matched_groups,
+                recipient_type=GroupIndividual.RecipientType.PRIMARY,
+                is_deleted=False,
+                individual__is_deleted=False,
+            ).select_related("individual")
+        }
+
+        for field_validation in validated_dataframe:
+            row = field_validation["row"]
+            if not any(_has_import_value(row.get(field)) for field in payment_fields):
+                continue
+
+            validations = field_validation["validations"]
+
+            def reject(field, message):
+                validations[f"payment_details_{field}"] = {
+                    "field_name": field,
+                    "success": False,
+                    "note": message,
+                }
+
+            form_number = _import_text(row.get("form_number"))
+            nid = _import_text(row.get("nid") or row.get("national_id"))
+            account_number = row.get("account_number")
+
+            for field, value in (
+                ("form_number", form_number),
+                ("nid", nid),
+                ("first_name", _import_text(row.get("first_name"))),
+                ("last_name", _import_text(row.get("last_name"))),
+            ):
+                if not value:
+                    reject(field, f"{field} is required for payment details.")
+            for field in payment_fields:
+                if not _has_import_value(row.get(field)):
+                    reject(field, f"{field} is required for payment details.")
+
+            if "account_number" in payment_fields and account_number is not None and not pd.isna(account_number):
+                if not isinstance(account_number, str):
+                    reject("account_number", "account_number must be provided as text.")
+                elif (
+                    account_number == INVALID_NUMERIC_EXCEL_CELL
+                    or SCIENTIFIC_NOTATION.fullmatch(account_number.strip())
+                    or DECIMAL_ACCOUNT_NUMBER.fullmatch(account_number.strip())
+                    or any(character.isspace() for character in account_number)
+                ):
+                    reject(
+                        "account_number",
+                        "account_number must be text without scientific notation, decimals, or spaces.",
+                    )
+
+            if not form_number:
+                continue
+
+            normalized_form_number = _normalize_import_text(form_number)
+            duplicate_rows = rows_by_form_number.get(normalized_form_number, [])
+            if len(duplicate_rows) > 1:
+                submitted_details = {
+                    tuple(
+                        _normalize_import_text(item["row"].get(field))
+                        for field in ["nid", *payment_fields]
+                    )
+                    for item in duplicate_rows
+                }
+                if len(submitted_details) > 1:
+                    reject(
+                        "form_number",
+                        "Conflicting payment details were submitted for this form_number.",
+                    )
+
+            recipient_matches = matches_by_form_number.get(normalized_form_number, [])
+            if len(recipient_matches) != 1 or recipient_matches[0][1] is None:
+                reject(
+                    "form_number",
+                    "The form_number does not identify exactly one household with a current primary recipient "
+                    "in your permitted district.",
+                )
+                continue
+
+            group, recipient = recipient_matches[0]
+            from household_validation.identity import get_household_form_number
+            if _normalize_import_text(get_household_form_number(group, recipient)) != normalized_form_number:
+                reject("form_number", "The form_number does not match the household.")
+                continue
+
+            # KYC is an authoritative update of the recipient's identity and
+            # payment details.  The submitted National ID may therefore fill
+            # a blank value or replace an existing one after approval.
+
+            for field in ("first_name", "last_name"):
+                submitted_name = _normalize_import_text(row.get(field))
+                current_name = _normalize_import_text(getattr(recipient, field))
+                if submitted_name and current_name and submitted_name != current_name:
+                    validations[f"payment_details_{field}_warning"] = {
+                        "field_name": field,
+                        "success": True,
+                        "warning": True,
+                        "note": f"The submitted {field.replace('_', ' ')} differs from the current primary recipient.",
+                    }
+
+            submitted_id = _import_text(row.get("ID"))
+            if submitted_id and submitted_id.casefold() != str(recipient.id).casefold():
+                reject("ID", "The supplied Individual ID does not match the primary recipient for this form_number.")
+
+            current_primary = current_primary_by_group.get(group.id)
+            current_individual = current_primary.individual if current_primary else None
+            if current_individual is None or current_individual.id != recipient.id:
+                has_errors = any(
+                    not value.get("success", False) and not value.get("warning")
+                    for value in validations.values()
+                )
+                if not has_errors:
+                    old_recipient = (
+                        _recipient_identity_summary(current_individual)
+                        if current_individual else None
+                    )
+                    new_recipient = _recipient_identity_summary(
+                        recipient,
+                        national_id=nid,
+                    )
+                    old_name = old_recipient["name"] if old_recipient else "No current primary recipient"
+                    validations["primary_recipient_change"] = {
+                        "field_name": "primary_recipient",
+                        "success": True,
+                        "warning": True,
+                        "note": (
+                            "Approval will change the primary recipient from "
+                            f"{old_name} to {new_recipient['name']}."
+                        ),
+                        "details": {
+                            "form_number": form_number,
+                            "current_recipient": old_recipient,
+                            "proposed_recipient": new_recipient,
+                        },
+                    }
+
+            row["ID"] = str(recipient.id)
+            source_id = row.get("id")
+            if source_id:
+                source = IndividualDataSource.objects.filter(id=source_id, is_deleted=False).first()
+                if source and _import_text((source.json_ext or {}).get("ID")) != str(recipient.id):
+                    source.json_ext = {**(source.json_ext or {}), "ID": str(recipient.id)}
+                    source.save(user=self.user)
+
+    def _find_payment_details_recipients(self, requested_form_numbers):
+        if not requested_form_numbers:
+            return {}
+
+        from django.db.models import Q
+
+        requested_form_numbers = list(requested_form_numbers)
+        # JSONB equality is type-aware. UBR data contains form numbers stored
+        # both as JSON strings and JSON numbers, while spreadsheet uploads
+        # always provide text. Query both representations so e.g. "30201307"
+        # also matches 30201307, without converting identifiers with leading
+        # zeroes or non-numeric characters.
+        form_number_lookup_values = set(requested_form_numbers)
+        form_number_lookup_values.update(
+            int(value)
+            for value in requested_form_numbers
+            if str(value).isdigit() and not str(value).startswith("0")
+        )
+        primary_memberships = authoritative_primary_worker_memberships().select_related("individual")
+        groups = Group.objects.filter(is_deleted=False).filter(
+            Q(json_ext__form_number__in=form_number_lookup_values)
+            | (
+                primary_worker_membership_filter("groupindividuals")
+                & Q(groupindividuals__individual__json_ext__form_number__in=form_number_lookup_values)
+            )
+        ).prefetch_related(
+            Prefetch(
+                "groupindividuals",
+                queryset=primary_memberships,
+                to_attr="payment_details_primary_memberships",
+            )
+        ).distinct()
+        groups = Group.get_queryset(groups, self.user)
+
+        matches = {}
+        for group in groups:
+            primary_members = [
+                membership
+                for membership in group.payment_details_primary_memberships
+                if not membership.individual.is_deleted
+            ]
+            group_form_number = (group.json_ext or {}).get("form_number")
+            candidate_form_numbers = {str(group_form_number)} if group_form_number else set()
+            candidate_form_numbers.update(
+                str((membership.individual.json_ext or {}).get("form_number"))
+                for membership in primary_members
+                if (membership.individual.json_ext or {}).get("form_number")
+            )
+            matching_form_numbers = {
+                form_number
+                for form_number in candidate_form_numbers
+                if _normalize_import_text(form_number)
+                in {_normalize_import_text(value) for value in requested_form_numbers}
+            }
+            for form_number in matching_form_numbers:
+                key = _normalize_import_text(form_number)
+                recipient = primary_members[0].individual if len(primary_members) == 1 else None
+                matches.setdefault(key, []).append((group, recipient))
+        return matches
 
     @staticmethod
     def _query_location_district_ids(df):
@@ -778,18 +1325,27 @@ class IndividualImportService:
         for field_validation in validated_dataframe:
             row = field_validation['row']
             error_fields = []
+            warning_fields = []
 
             for key, value in field_validation['validations'].items():
-                if not value.get('success', False):
-                    error_fields.append({
-                        "field_name": value.get('field_name'),
-                        "note": value.get('note')
-                    })
+                result = {
+                    "field_name": value.get('field_name'),
+                    "note": value.get('note'),
+                }
+                if value.get("details"):
+                    result["details"] = value["details"]
+                if value.get("warning"):
+                    warning_fields.append(result)
+                elif not value.get('success', False):
+                    error_fields.append(result)
 
             data_sources_to_update.append(
                 IndividualDataSource(
                     id=row['id'],
-                    validations={'validation_errors': error_fields}
+                    validations={
+                        'validation_errors': error_fields,
+                        'validation_warnings': warning_fields,
+                    }
                 )
             )
 
@@ -813,9 +1369,9 @@ class IndividualImportService:
                 self.user
             ).run_workflow()
 
-    def create_task_with_update_valid_items(self, upload_id: uuid):
+    def create_task_with_update_valid_items(self, upload_id: uuid, force_maker_checker=False):
         # Resolve automatically if maker-checker not enabled
-        if IndividualConfig.enable_maker_checker_for_individual_update:
+        if force_maker_checker or IndividualConfig.enable_maker_checker_for_individual_update:
             IndividualTaskCreatorService(self.user) \
                 .create_task_with_update_valid_items(upload_id)
         else:
@@ -862,6 +1418,14 @@ class IndividualTaskCreatorService:
                 if isinstance(upload_record.json_ext, dict)
                 else None,
         }
+        if upload_record.workflow == KYC_DETAILS_WORKFLOW_NAME:
+            validations = IndividualDataSource.objects.filter(
+                upload_id=upload_id,
+                is_deleted=False,
+            ).values("validations")
+            json_ext["primary_recipient_changes"] = (
+                IndividualImportService._primary_recipient_changes_from_sources(validations)
+            )
         TaskService(self.user).create({
             'source': 'import_valid_items',
             'entity': upload_record,

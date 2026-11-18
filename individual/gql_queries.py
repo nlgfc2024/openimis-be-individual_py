@@ -1,5 +1,6 @@
 import graphene
 from django.contrib.auth.models import AnonymousUser
+from django.db.models import Prefetch
 from graphene_django import DjangoObjectType
 import graphene_django_optimizer as gql_optimizer
 
@@ -8,6 +9,7 @@ from core.gql_queries import UserGQLType
 from individual.apps import IndividualConfig
 from individual.models import Individual, IndividualDataSource, Group, GroupIndividual, \
     IndividualDataSourceUpload, IndividualDataUploadRecords, GroupDataSource
+from individual.primary_recipients import authoritative_primary_worker_memberships
 
 
 def _have_permissions(user, permission):
@@ -120,6 +122,19 @@ class IndividualDataSourceGQLType(DjangoObjectType):
 class GroupGQLType(DjangoObjectType):
     uuid = graphene.String(source='uuid')
     head = graphene.Field(IndividualGQLType)
+    primary_recipient = graphene.Field(IndividualGQLType)
+    # Populated only for the Phase-scoped KYC export. These scalar fields are
+    # explicitly declared so the generic, allow-listed Group exporter can use
+    # the annotations added by ``resolve_group``.
+    kyc_phase = graphene.String()
+    kyc_catchment = graphene.String()
+    primary_recipient_full_name = graphene.String()
+    primary_recipient_dob = graphene.String()
+    primary_recipient_gender = graphene.String()
+    primary_recipient_national_id = graphene.String()
+    primary_recipient_account_number = graphene.String()
+    primary_recipient_account_name = graphene.String()
+    primary_recipient_bank = graphene.String()
 
     def resolve_head(self, info):
         return Individual.objects.filter(
@@ -127,6 +142,15 @@ class GroupGQLType(DjangoObjectType):
             groupindividuals__role=GroupIndividual.Role.HEAD,
             groupindividuals__is_deleted=False,
         ).first()
+
+    def resolve_primary_recipient(self, info):
+        primary_recipients = getattr(self, "primary_worker_memberships", None)
+        if primary_recipients is not None:
+            return primary_recipients[0].individual if primary_recipients else None
+        primary = authoritative_primary_worker_memberships().filter(
+            group_id=self.id,
+        ).select_related("individual").first()
+        return primary.individual if primary else None
 
     class Meta:
         model = Group
@@ -144,7 +168,14 @@ class GroupGQLType(DjangoObjectType):
 
     @classmethod
     def get_queryset(cls, queryset, info):
-        return Group.get_queryset(queryset, info.context.user)
+        primary_recipients = authoritative_primary_worker_memberships().select_related("individual")
+        return Group.get_queryset(queryset, info.context.user).prefetch_related(
+            Prefetch(
+                "groupindividuals",
+                queryset=primary_recipients,
+                to_attr="primary_worker_memberships",
+            ),
+        )
 
 
 class GroupHistoryGQLType(DjangoObjectType):

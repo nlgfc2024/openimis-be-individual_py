@@ -5,6 +5,7 @@ from individual.tests.test_helpers import (
     create_group_with_individual,
     IndividualGQLTestCase,
 )
+from individual.models import GroupIndividual
 from location.test_helpers import create_test_village
 
 
@@ -397,6 +398,127 @@ class IndividualGQLQueryTest(IndividualGQLTestCase):
         )
         content = json.loads(response.content)
         self.assertEqual(content['errors'][0]['message'], 'Unauthorized')
+
+    def test_primary_recipient_only_filter(self):
+        self.group_individual_a.recipient_type = GroupIndividual.RecipientType.PRIMARY
+        self.group_individual_a.json_ext = {"primary_worker": True}
+        self.group_a.json_ext = {**(self.group_a.json_ext or {}), "validation_status": "VERIFIED"}
+        self.group_a.save(username=self.admin_user.username)
+        self.group_individual_a.save(username=self.admin_user.username)
+
+        response = self.query(
+            '''query {
+              individual(primaryRecipientOnly: true, first: 100) {
+                edges {
+                  node {
+                    uuid
+                  }
+                }
+              }
+            }''',
+            headers={"HTTP_AUTHORIZATION": f"Bearer {self.admin_token}"},
+        )
+        self.assertResponseNoErrors(response)
+
+        content = json.loads(response.content)
+        individual_uuids = [
+            edge['node']['uuid']
+            for edge in content['data']['individual']['edges']
+        ]
+        self.assertEqual(individual_uuids, [str(self.individual_a.uuid)])
+
+    def test_group_primary_recipient_export_requires_verified_individual(self):
+        self.group_individual_a.json_ext = {"primary_worker": True}
+        self.group_individual_a.save(username=self.admin_user.username)
+        self.group_a.json_ext = {**(self.group_a.json_ext or {}), "validation_status": "VERIFIED"}
+        self.group_a.save(username=self.admin_user.username)
+        self.individual_a.json_ext = {
+            **(self.individual_a.json_ext or {}),
+            "validation_status": "PENDING",
+        }
+        self.individual_a.save(username=self.admin_user.username)
+        query = f'''query {{
+          group(name: "{self.group_a.code}", primaryRecipientOnly: true) {{
+            edges {{ node {{ uuid }} }}
+          }}
+        }}'''
+
+        response = self.query(
+            query,
+            headers={"HTTP_AUTHORIZATION": f"Bearer {self.admin_token}"},
+        )
+        self.assertResponseNoErrors(response)
+        content = json.loads(response.content)
+        self.assertEqual(content["data"]["group"]["edges"], [])
+
+        self.individual_a.json_ext["validation_status"] = "VERIFIED"
+        self.individual_a.save(username=self.admin_user.username)
+        response = self.query(
+            query,
+            headers={"HTTP_AUTHORIZATION": f"Bearer {self.admin_token}"},
+        )
+        self.assertResponseNoErrors(response)
+        content = json.loads(response.content)
+        self.assertEqual(
+            [edge["node"]["uuid"] for edge in content["data"]["group"]["edges"]],
+            [str(self.group_a.uuid)],
+        )
+
+    def test_group_query_household_filters(self):
+        self.group_a.json_ext = {
+            **(self.group_a.json_ext or {}),
+            "validation_status": "VERIFIED",
+            "sector": "Agriculture",
+        }
+        self.group_a.save(username=self.admin_user.username)
+        self.group_individual_a.recipient_type = GroupIndividual.RecipientType.PRIMARY
+        self.group_individual_a.json_ext = {"primary_worker": True}
+        self.group_individual_a.save(username=self.admin_user.username)
+        self.individual_a.json_ext = {
+            **(self.individual_a.json_ext or {}),
+            "validation_status": "VERIFIED",
+        }
+        self.individual_a.save(username=self.admin_user.username)
+
+        response = self.query(
+            f'''query {{
+              group(
+                name: "{self.group_a.code}",
+                validationStatus: "VERIFIED",
+                sector: "agric",
+                primaryRecipientOnly: true
+              ) {{
+                edges {{ node {{ uuid }} }}
+              }}
+            }}''',
+            headers={"HTTP_AUTHORIZATION": f"Bearer {self.admin_token}"},
+        )
+        self.assertResponseNoErrors(response)
+
+        content = json.loads(response.content)
+        group_uuids = [
+            edge['node']['uuid']
+            for edge in content['data']['group']['edges']
+        ]
+        self.assertEqual(group_uuids, [str(self.group_a.uuid)])
+
+    def test_primary_recipient_export_data_keeps_groups_without_a_primary(self):
+        response = self.query(
+            '''query {
+              group(includePrimaryRecipientData: true, first: 100) {
+                edges { node { uuid } }
+              }
+            }''',
+            headers={"HTTP_AUTHORIZATION": f"Bearer {self.admin_token}"},
+        )
+        self.assertResponseNoErrors(response)
+
+        content = json.loads(response.content)
+        group_uuids = [
+            edge['node']['uuid']
+            for edge in content['data']['group']['edges']
+        ]
+        self.assertIn(str(self.group_no_loc.uuid), group_uuids)
 
     def test_individual_query_row_security(self):
         date_created = str(self.individual_a.date_created).replace(' ', 'T')

@@ -1,4 +1,6 @@
 import os
+import json
+import csv
 from unittest.mock import patch, MagicMock
 from rest_framework.test import APITestCase
 from rest_framework import status
@@ -9,6 +11,7 @@ from django.utils import timezone
 from core.test_helpers import create_test_interactive_user
 from core.models import ModuleConfiguration
 from individual.apps import IndividualConfig
+from individual.views import is_valid_file
 
 
 class TestView(APITestCase):
@@ -33,6 +36,18 @@ class TestView(APITestCase):
         self.admin_user = create_test_interactive_user()
         self.client.force_authenticate(user=self.admin_user)
 
+    def test_ods_upload_is_an_allowed_spreadsheet(self):
+        uploaded_file = SimpleUploadedFile(
+            "accounts.ods",
+            b"ods-content",
+            content_type="application/vnd.oasis.opendocument.spreadsheet",
+        )
+
+        valid, error = is_valid_file(uploaded_file)
+
+        self.assertTrue(valid)
+        self.assertIsNone(error)
+
     def test_download_template_file(self):
         response = self.client.get(self.download_url)
 
@@ -45,33 +60,53 @@ class TestView(APITestCase):
 
         expected_base_csv_header = 'first_name,last_name,dob,location_name,location_code,id'
         content = b"".join(response.streaming_content).decode('utf-8')
-        self.assertTrue(
-            expected_base_csv_header in content,
-            f'Expect csv template header to contain {expected_base_csv_header}, but got {content}'
+        header = next(csv.reader(content.splitlines()))
+        expected_base_fields = [
+            'first_name', 'last_name', 'dob', 'location_name', 'location_code', 'id',
+        ]
+        self.assertEqual(
+            header[:len(expected_base_fields)],
+            expected_base_fields,
+            f'Expect csv template header to contain {expected_base_csv_header}, but got {content}',
+        )
+        for kyc_only_column in ('nid', 'account_number', 'account_name', 'bank'):
+            self.assertNotIn(kyc_only_column, header)
+
+    def test_download_kyc_details_template_file(self):
+        response = self.client.get(
+            self.download_url,
+            {"workflow_name": "Python KYC Details"},
         )
 
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn(
+            'attachment; filename="individual_kyc_details_template.csv"',
+            response['Content-Disposition'],
+        )
+        content = b"".join(response.streaming_content).decode('utf-8')
+        self.assertEqual(next(csv.reader(content.splitlines())), [
+            "form_number", "district", "ta", "gvh", "village", "catchment",
+            "first_name", "last_name", "nid", "account_number", "account_name", "bank",
+        ])
+
     def test_download_template_file_on_individual_schema_update(self):
-        # First set the individual config to be empty
-        config = ModuleConfiguration.objects.filter(module='individual', layer='be')
-        if not config:
-            config = ModuleConfiguration(module='individual', layer='be', config='{}')
-        else:
-            config.config = '{}'
-        config.save()
-
-        # Then update individual config to with the fixture config
         with open(self.test_config_path, 'rb') as test_file:
-            config.config = test_file.read()
-        config.save()
+            fixture_config = json.load(test_file)
 
-        response = self.client.get(self.download_url)
+        # Module configuration is loaded when Django starts. Patch the active
+        # configuration for this request instead of relying on a model save to
+        # reload AppConfig state during a test.
+        with patch.object(IndividualConfig, 'individual_schema', fixture_config['individual_schema']):
+            response = self.client.get(self.download_url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
         # Check the template file contains individual schema fields from fixture config
         content = b"".join(response.streaming_content).decode('utf-8')
+        header = next(csv.reader(content.splitlines()))
         for expected_column in ('poor', 'educated_level', 'number_of_children'):
-            self.assertTrue(
-                expected_column in content,
+            self.assertIn(
+                expected_column,
+                header,
                 f'Expect csv template header to contain {expected_column}, but got {content}'
             )
 
@@ -109,6 +144,38 @@ class TestView(APITestCase):
         self.assertIn('message', response.data)
 
         mock_handler_instance.save_file.assert_called_once()
+
+    @patch('individual.views._remove_file')
+    @patch('individual.views.WorkflowService.get_workflows')
+    @patch('individual.views.IndividualImportService.import_individuals')
+    @patch('individual.views.DefaultStorageFileHandler')
+    def test_import_individuals_workflow_failure_returns_error_details(
+            self, mock_file_handler, mock_import, mock_get_workflows, mock_remove_file):
+        mock_get_workflows.return_value = {
+            'success': True,
+            'data': {'workflows': [{'id': 1, 'name': 'Test Workflow'}]},
+        }
+        mock_import.return_value = {
+            'success': False,
+            'message': 'The upload workflow failed.',
+            'error': {'workflow': 'KYC upload is missing required columns: bank.'},
+            'data': {'upload_uuid': 'upload-uuid', 'status': 'FAIL'},
+        }
+
+        with open(self.test_file_path, 'rb') as test_file:
+            response = self.client.post(
+                self.upload_url,
+                data={**self.upload_data, 'file': test_file},
+                format='multipart',
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            response.data['error']['workflow'],
+            'KYC upload is missing required columns: bank.',
+        )
+        mock_file_handler.return_value.save_file.assert_called_once()
+        mock_remove_file.assert_not_called()
 
     @patch('individual.views.WorkflowService.get_workflows')
     @patch('individual.views.IndividualImportService.import_individuals')
