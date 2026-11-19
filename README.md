@@ -19,6 +19,30 @@ It is dedicated to be deployed as a module of [openimis-be_py](https://github.co
 * individualExport
 * groupIndividualExport
 
+## Benefit Plan Access Control — Shared Registry Behaviour
+
+Individuals and households remain part of a shared registry regardless of the
+user's assigned programme. Benefit Plan access controls programme-specific
+beneficiaries and related information, not the general registry.
+
+- General Individual and Household records remain shared. Existing role and
+  location permissions continue to apply.
+- `individual`, `group`, `groupIndividual`, and their general registry history
+  queries remain accessible under their existing permissions and do not
+  require `benefitPlanId`.
+- A query that explicitly supplies `benefitPlanId` must validate the user's
+  access to that programme.
+- Programme-specific beneficiary, KYC, and upload information remains
+  protected by Benefit Plan access control.
+- General-registry uploads are shared only when they are explicitly identified
+  by an Individual upload record and have no Benefit Plan association. Missing
+  ownership metadata is not treated as proof that an upload is general.
+- When Social Protection is not installed, or Benefit Plan enforcement is
+  disabled, the Individual module retains its legacy behaviour.
+
+The Individual and Household registries must not be globally isolated by
+Benefit Plan.
+
 ## GraphQL Mutations - each mutation emits default signals and return standard error lists (cfr. openimis-be-core_py)
 * createIndividual
 * updateIndividual

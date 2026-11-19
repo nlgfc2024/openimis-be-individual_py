@@ -15,9 +15,11 @@ from individual.primary_recipients import authoritative_primary_worker_membershi
 def _filter_by_accessible_uploads(queryset, info, upload_field):
     """Scope raw imports to uploads whose every programme is accessible.
 
-    Unassociated uploads are intentionally visible only to unrestricted users
-    while programme access control is enabled.  With the feature disabled, or
-    without Social Protection installed, the legacy queryset is unchanged.
+    Positively identified general-registry uploads remain visible. An upload is
+    general only when it has an active Individual upload record and has never
+    had a Benefit Plan upload record; missing or inconsistent ownership data
+    therefore stays hidden. With the feature disabled, or without Social
+    Protection installed, the legacy queryset is unchanged.
     """
     from django.apps import apps
 
@@ -32,23 +34,45 @@ def _filter_by_accessible_uploads(queryset, info, upload_field):
     if not SocialProtectionConfig.enable_benefit_plan_access_control:
         return queryset
 
+    if not _have_permissions(
+        info.context.user,
+        IndividualConfig.gql_individual_search_perms,
+    ):
+        return queryset.none()
+
     accessible_ids = get_accessible_benefit_plan_ids(info.context.user)
     if accessible_ids is None:
         return queryset
 
     from social_protection.models import BenefitPlanDataUploadRecords
 
-    records = BenefitPlanDataUploadRecords.objects.filter(is_deleted=False)
-    inaccessible_upload_ids = records.exclude(
+    # Include soft-deleted ownership rows. Removing an association must never
+    # reclassify programme data as a general-registry upload.
+    programme_records = BenefitPlanDataUploadRecords.objects.all()
+    inaccessible_upload_ids = programme_records.exclude(
         benefit_plan_id__in=accessible_ids,
     ).values("data_upload_id")
-    accessible_upload_ids = records.filter(
+    accessible_programme_upload_ids = programme_records.filter(
         benefit_plan_id__in=accessible_ids,
     ).exclude(
         data_upload_id__in=inaccessible_upload_ids,
     ).values("data_upload_id")
+
+    # IndividualDataUploadRecords is the explicit marker produced by the
+    # general Individual/Household registry import service. Merely lacking a
+    # programme record is not sufficient because an interrupted programme
+    # import can leave an unassociated upload behind.
+    general_registry_upload_ids = IndividualDataUploadRecords.objects.filter(
+        is_deleted=False,
+    ).exclude(
+        data_upload_id__in=programme_records.values("data_upload_id"),
+    ).values("data_upload_id")
+
+    from django.db.models import Q
+
     return queryset.filter(
-        **{f"{upload_field}__in": accessible_upload_ids}
+        Q(**{f"{upload_field}__in": accessible_programme_upload_ids})
+        | Q(**{f"{upload_field}__in": general_registry_upload_ids})
     )
 
 

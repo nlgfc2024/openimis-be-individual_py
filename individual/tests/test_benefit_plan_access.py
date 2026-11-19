@@ -9,8 +9,10 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from core.models import User
 from core.test_helpers import create_test_technical_user
 from individual.custom_filters import IndividualCustomFilterWizard
+from individual.gql_queries import _filter_by_accessible_uploads
 from individual.models import (
     Group,
+    GroupDataSource,
     IndividualDataSource,
     IndividualDataSourceUpload,
     IndividualDataUploadRecords,
@@ -159,6 +161,13 @@ class IndividualBenefitPlanQueryAccessTest(SimpleTestCase):
         result, queryset, _user = self._resolve("legacy-plan")
         self.assertIs(result, queryset)
 
+    def test_upload_scope_remains_compatible_without_social_protection(self):
+        queryset = Mock()
+        info = SimpleNamespace(context=SimpleNamespace(user=Mock()))
+        with patch("django.apps.apps.is_installed", return_value=False):
+            result = _filter_by_accessible_uploads(queryset, info, "id")
+        self.assertIs(result, queryset)
+
 
 class IndividualCustomFilterBenefitPlanAccessTest(SimpleTestCase):
     tuple_type = namedtuple("Individual", ["field", "filter", "type"])
@@ -270,6 +279,52 @@ class IndividualBenefitPlanIntegrationTest(TestCase):
 
         cls.upg_upload = cls._create_upload("track04-upg.csv", cls.upg)
         cls.rmep_upload = cls._create_upload("track04-rmep.csv", cls.rmep)
+        cls.dual_upload = cls._create_upload("track04-dual.csv", cls.upg)
+        BenefitPlanDataUploadRecords(
+            data_upload=cls.dual_upload,
+            benefit_plan=cls.rmep,
+            workflow="track04",
+        ).save(user=cls.audit_user)
+        cls.general_upload = cls._create_general_upload("track04-registry.csv")
+        cls.general_group_source = GroupDataSource(
+            group=cls.upg_group,
+            upload=cls.general_upload,
+            validations={},
+            json_ext={"general": True},
+        )
+        cls.general_group_source.save(user=cls.audit_user)
+        cls.ambiguous_upload = cls._create_bare_upload("track04-ambiguous.csv")
+        cls.deleted_association_upload = cls._create_general_upload(
+            "track04-deleted-association.csv",
+        )
+        deleted_record = BenefitPlanDataUploadRecords(
+            data_upload=cls.deleted_association_upload,
+            benefit_plan=cls.rmep,
+            workflow="track04",
+        )
+        deleted_record.save(user=cls.audit_user)
+        deleted_record.delete(user=cls.audit_user)
+
+    @classmethod
+    def _create_bare_upload(cls, filename):
+        upload = IndividualDataSourceUpload(
+            source_name=filename,
+            source_type="individual import",
+            status=IndividualDataSourceUpload.Status.SUCCESS,
+            error={},
+            json_ext={},
+        )
+        upload.save(user=cls.audit_user)
+        return upload
+
+    @classmethod
+    def _create_general_upload(cls, filename):
+        upload = cls._create_bare_upload(filename)
+        IndividualDataUploadRecords(
+            data_upload=upload,
+            workflow="registry",
+        ).save(user=cls.audit_user)
+        return upload
 
     @classmethod
     def _create_upload(cls, filename, benefit_plan):
@@ -366,9 +421,15 @@ class IndividualBenefitPlanIntegrationTest(TestCase):
     def test_real_assignment_scopes_upload_rows_uploads_and_history(self):
         query = """
             query {
-              individualDataSource { edges { node { upload { sourceName } } } }
-              individualDataSourceUpload { edges { node { sourceName } } }
-              individualDataUploadHistory {
+              individualDataSource(upload_SourceName_Istartswith: "track04-") {
+                edges { node { upload { sourceName } } }
+              }
+              individualDataSourceUpload(sourceName_Istartswith: "track04-") {
+                edges { node { sourceName } }
+              }
+              individualDataUploadHistory(
+                dataUpload_SourceName_Istartswith: "track04-"
+              ) {
                 edges { node { dataUpload { sourceName } } }
               }
             }
@@ -377,20 +438,127 @@ class IndividualBenefitPlanIntegrationTest(TestCase):
             result = self.execute(query)
         self.assertFalse(result.errors, result.errors)
         self.assertEqual(
-            [edge["node"]["upload"]["sourceName"] for edge in
-             result.data["individualDataSource"]["edges"]],
-            [self.upg_upload.source_name],
+            {edge["node"]["upload"]["sourceName"] for edge in
+             result.data["individualDataSource"]["edges"]
+             if edge["node"]["upload"]["sourceName"].startswith("track04-")},
+            {self.upg_upload.source_name},
         )
         self.assertEqual(
-            [edge["node"]["sourceName"] for edge in
-             result.data["individualDataSourceUpload"]["edges"]],
-            [self.upg_upload.source_name],
+            {edge["node"]["sourceName"] for edge in
+             result.data["individualDataSourceUpload"]["edges"]
+             if edge["node"]["sourceName"].startswith("track04-")},
+            {self.upg_upload.source_name, self.general_upload.source_name},
         )
         self.assertEqual(
-            [edge["node"]["dataUpload"]["sourceName"] for edge in
-             result.data["individualDataUploadHistory"]["edges"]],
-            [self.upg_upload.source_name],
+            {edge["node"]["dataUpload"]["sourceName"] for edge in
+             result.data["individualDataUploadHistory"]["edges"]
+             if edge["node"]["dataUpload"]["sourceName"].startswith("track04-")},
+            {self.upg_upload.source_name, self.general_upload.source_name},
         )
+
+    def test_programme_upload_requires_every_associated_plan(self):
+        query = """
+            query {
+              individualDataSourceUpload { edges { node { sourceName } } }
+            }
+        """
+        with self.permission_patch():
+            upg_only = self.execute(query)
+        self.assertFalse(upg_only.errors, upg_only.errors)
+        upg_names = {
+            edge["node"]["sourceName"]
+            for edge in upg_only.data["individualDataSourceUpload"]["edges"]
+        }
+        self.assertIn(self.upg_upload.source_name, upg_names)
+        self.assertNotIn(self.rmep_upload.source_name, upg_names)
+        self.assertNotIn(self.dual_upload.source_name, upg_names)
+
+        UserBenefitPlanAccess.objects.filter(user=self.user).delete()
+        UserBenefitPlanAccess(
+            user=self.user,
+            benefit_plan=self.rmep,
+        ).save(user=self.audit_user)
+        with self.permission_patch():
+            rmep_only = self.execute(query)
+        self.assertFalse(rmep_only.errors, rmep_only.errors)
+        rmep_names = {
+            edge["node"]["sourceName"]
+            for edge in rmep_only.data["individualDataSourceUpload"]["edges"]
+        }
+        self.assertIn(self.rmep_upload.source_name, rmep_names)
+        self.assertNotIn(self.upg_upload.source_name, rmep_names)
+        self.assertNotIn(self.dual_upload.source_name, rmep_names)
+
+        UserBenefitPlanAccess(
+            user=self.user,
+            benefit_plan=self.upg,
+        ).save(user=self.audit_user)
+        with self.permission_patch():
+            both = self.execute(query)
+        self.assertFalse(both.errors, both.errors)
+        both_names = {
+            edge["node"]["sourceName"]
+            for edge in both.data["individualDataSourceUpload"]["edges"]
+        }
+        self.assertTrue({
+            self.upg_upload.source_name,
+            self.rmep_upload.source_name,
+            self.dual_upload.source_name,
+        }.issubset(both_names))
+
+    def test_general_registry_upload_and_group_source_are_shared(self):
+        query = """
+            query {
+              individualDataSourceUpload { edges { node { sourceName } } }
+              individualDataUploadHistory {
+                edges { node { dataUpload { sourceName } } }
+              }
+              groupDataSource(upload_SourceName_Iexact: "track04-registry.csv") {
+                edges { node { upload { sourceName } } }
+              }
+            }
+        """
+        with self.permission_patch():
+            result = self.execute(query)
+        self.assertFalse(result.errors, result.errors)
+        self.assertIn(
+            self.general_upload.source_name,
+            {edge["node"]["sourceName"] for edge in
+             result.data["individualDataSourceUpload"]["edges"]},
+        )
+        self.assertIn(
+            self.general_upload.source_name,
+            {edge["node"]["upload"]["sourceName"] for edge in
+             result.data["groupDataSource"]["edges"]},
+        )
+
+    def test_missing_and_deleted_programme_ownership_never_become_general(self):
+        query = """
+            query {
+              individualDataSourceUpload { edges { node { sourceName } } }
+            }
+        """
+        with self.permission_patch():
+            result = self.execute(query)
+        self.assertFalse(result.errors, result.errors)
+        names = {
+            edge["node"]["sourceName"]
+            for edge in result.data["individualDataSourceUpload"]["edges"]
+        }
+        self.assertNotIn(self.ambiguous_upload.source_name, names)
+        self.assertNotIn(self.deleted_association_upload.source_name, names)
+
+    def test_upload_queries_require_existing_registry_permission(self):
+        query = """
+            query {
+              individualDataSourceUpload { edges { node { sourceName } } }
+              groupDataSource { edges { node { jsonExt } } }
+            }
+        """
+        with patch.object(User, "has_perms", return_value=False):
+            result = self.execute(query)
+        self.assertTrue(result.errors)
+        self.assertTrue(all("Unauthorized" in error.message for error in result.errors))
 
     def test_all_plan_and_disabled_modes_preserve_upload_visibility(self):
         query = """
@@ -406,6 +574,21 @@ class IndividualBenefitPlanIntegrationTest(TestCase):
             .issubset({edge["node"]["sourceName"] for edge in
                        all_plan.data["individualDataSourceUpload"]["edges"]}),
         )
+
+        self.user.t_user.is_superuser = True
+        self.user.t_user.save()
+        try:
+            with self.permission_patch():
+                superuser = self.execute(query)
+            self.assertFalse(superuser.errors, superuser.errors)
+            self.assertTrue(
+                {self.upg_upload.source_name, self.rmep_upload.source_name}
+                .issubset({edge["node"]["sourceName"] for edge in
+                           superuser.data["individualDataSourceUpload"]["edges"]}),
+            )
+        finally:
+            self.user.t_user.is_superuser = False
+            self.user.t_user.save()
 
         SocialProtectionConfig.enable_benefit_plan_access_control = False
         with self.permission_patch():
