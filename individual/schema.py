@@ -32,6 +32,25 @@ from individual.primary_recipients import (
 from location.apps import LocationConfig
 
 
+def _require_benefit_plan_access(user, benefit_plan_id):
+    """Authorize a programme-scoped query when Social Protection is present."""
+    if not apps.is_installed("social_protection"):
+        return
+
+    from social_protection.apps import SocialProtectionConfig
+    from social_protection.benefit_plan_access import require_benefit_plan_access
+
+    require_benefit_plan_access(user, benefit_plan_id)
+    if SocialProtectionConfig.enable_benefit_plan_access_control:
+        from social_protection.models import BenefitPlan
+
+        if not BenefitPlan.objects.filter(
+            id=benefit_plan_id,
+            is_deleted=False,
+        ).exists():
+            raise PermissionDenied("Benefit Plan does not exist.")
+
+
 def patch_details(data_df: pd.DataFrame):
     # Transform extension to DF columns
     if 'json_ext' in data_df:
@@ -177,26 +196,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
 
         benefit_plan_id = kwargs.get("benefitPlanId")
         if benefit_plan_id:
-            if apps.is_installed("social_protection"):
-                from social_protection.apps import SocialProtectionConfig
-                from social_protection.benefit_plan_access import (
-                    require_benefit_plan_access,
-                )
-
-                require_benefit_plan_access(
-                    info.context.user,
-                    benefit_plan_id,
-                )
-                if (
-                    SocialProtectionConfig.enable_benefit_plan_access_control
-                ):
-                    from social_protection.models import BenefitPlan
-
-                    if not BenefitPlan.objects.filter(
-                        id=benefit_plan_id,
-                        is_deleted=False,
-                    ).exists():
-                        raise PermissionDenied("Benefit Plan does not exist.")
+            _require_benefit_plan_access(info.context.user, benefit_plan_id)
             filters.append(
                 Q(is_deleted=False) & Q(
                     beneficiary__benefit_plan_id=benefit_plan_id
@@ -385,6 +385,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
 
         benefit_plan_id = kwargs.get("benefitPlanId")
         if benefit_plan_id:
+            _require_benefit_plan_access(info.context.user, benefit_plan_id)
             beneficiary_filters = Q(
                 groupbeneficiary__benefit_plan_id=benefit_plan_id,
                 groupbeneficiary__is_deleted=False,
