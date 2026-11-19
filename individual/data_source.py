@@ -29,6 +29,7 @@ DEFAULT_KYC_PAYMENT_DETAILS_CONFIG = {
     "header_aliases": {
         "district": "district",
         "district name": "district",
+        "household form number": "form_number",
         "ubr household form number": "form_number",
         "form number": "form_number",
         "traditional authority": "ta",
@@ -39,6 +40,7 @@ DEFAULT_KYC_PAYMENT_DETAILS_CONFIG = {
         "village name": "village",
         "catchment": "catchment",
         "catchment name": "catchment",
+        "phase": "phase_name",
         "first name": "first_name",
         "last name": "last_name",
         "full name": "full_name",

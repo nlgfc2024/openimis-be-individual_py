@@ -121,6 +121,23 @@ class PaymentDetailsExcelLoaderTests(SimpleTestCase):
             "bank",
         ])
 
+    def test_household_form_number_export_heading_is_accepted(self):
+        dataframe = pd.DataFrame([{
+            "Household Form Number": "30201307",
+            "First Name": "Mofat",
+            "Last Name": "Nkhonya",
+            "National ID": "NID-001",
+            "Account number": "00012345",
+            "Account name": "Mofat Nkhonya",
+            "Bank / provider": "Mpamba",
+        }])
+
+        normalized = normalize_kyc_dataframe_headers(dataframe)
+
+        self.assertIn("form_number", normalized.columns)
+        self.assertEqual(normalized.loc[0, "form_number"], "30201307")
+        _validate_kyc_details_file(normalized)
+
     def test_kyc_header_normalization_reports_alias_collisions(self):
         dataframe = pd.DataFrame(columns=["form_number", "UBR household form number"])
         with self.assertRaisesRegex(ValueError, "duplicate columns"):
@@ -150,7 +167,7 @@ class PaymentDetailsExcelLoaderTests(SimpleTestCase):
             "district_name": "Karonga",
             "traditional_authority_name": "Kilipula",
             "catchment_name": "Benjamin",
-            "phase_name": "202623082 phase anavili1000",
+            "Phase": "202623082 phase anavili1000",
             "group_village_head_name": "Mweniwisi",
             "village_name": "Kenani",
             "form_number": "30201307",
@@ -167,6 +184,7 @@ class PaymentDetailsExcelLoaderTests(SimpleTestCase):
 
         self.assertEqual(normalized.loc[0, "first_name"], "Mofat")
         self.assertEqual(normalized.loc[0, "last_name"], "Nkhonya")
+        self.assertEqual(normalized.loc[0, "phase_name"], "202623082 phase anavili1000")
         self.assertNotIn("full_name", normalized.columns)
         _validate_kyc_details_file(normalized)
 
