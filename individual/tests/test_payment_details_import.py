@@ -345,7 +345,7 @@ class PaymentDetailsImportTests(TestCase):
             first_name="Bob",
             last_name="New",
             dob="1985-01-01",
-            json_ext={"national_id": "NID-002"},
+            json_ext={"national_id": "NID-002", "form_number": "F-001"},
         )
         proposed_recipient.save(user=self.user)
         GroupIndividual(
