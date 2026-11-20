@@ -12,6 +12,70 @@ from individual.models import Individual, IndividualDataSource, Group, GroupIndi
 from individual.primary_recipients import authoritative_primary_worker_memberships
 
 
+def _filter_by_accessible_uploads(queryset, info, upload_field):
+    """Scope raw imports to uploads whose every programme is accessible.
+
+    Positively identified general-registry uploads remain visible. An upload is
+    general only when it has an active Individual upload record and has never
+    had a Benefit Plan upload record; missing or inconsistent ownership data
+    therefore stays hidden. With the feature disabled, or without Social
+    Protection installed, the legacy queryset is unchanged.
+    """
+    from django.apps import apps
+
+    if not apps.is_installed("social_protection"):
+        return queryset
+
+    from social_protection.apps import SocialProtectionConfig
+    from social_protection.benefit_plan_access import (
+        get_accessible_benefit_plan_ids,
+    )
+
+    if not SocialProtectionConfig.enable_benefit_plan_access_control:
+        return queryset
+
+    if not _have_permissions(
+        info.context.user,
+        IndividualConfig.gql_individual_search_perms,
+    ):
+        return queryset.none()
+
+    accessible_ids = get_accessible_benefit_plan_ids(info.context.user)
+    if accessible_ids is None:
+        return queryset
+
+    from social_protection.models import BenefitPlanDataUploadRecords
+
+    # Include soft-deleted ownership rows. Removing an association must never
+    # reclassify programme data as a general-registry upload.
+    programme_records = BenefitPlanDataUploadRecords.objects.all()
+    inaccessible_upload_ids = programme_records.exclude(
+        benefit_plan_id__in=accessible_ids,
+    ).values("data_upload_id")
+    accessible_programme_upload_ids = programme_records.filter(
+        benefit_plan_id__in=accessible_ids,
+    ).exclude(
+        data_upload_id__in=inaccessible_upload_ids,
+    ).values("data_upload_id")
+
+    # IndividualDataUploadRecords is the explicit marker produced by the
+    # general Individual/Household registry import service. Merely lacking a
+    # programme record is not sufficient because an interrupted programme
+    # import can leave an unassociated upload behind.
+    general_registry_upload_ids = IndividualDataUploadRecords.objects.filter(
+        is_deleted=False,
+    ).exclude(
+        data_upload_id__in=programme_records.values("data_upload_id"),
+    ).values("data_upload_id")
+
+    from django.db.models import Q
+
+    return queryset.filter(
+        Q(**{f"{upload_field}__in": accessible_programme_upload_ids})
+        | Q(**{f"{upload_field}__in": general_registry_upload_ids})
+    )
+
+
 def _have_permissions(user, permission):
     if isinstance(user, AnonymousUser):
         return False
@@ -100,6 +164,10 @@ class IndividualDataSourceUploadGQLType(DjangoObjectType):
         }
         connection_class = ExtendedConnection
 
+    @classmethod
+    def get_queryset(cls, queryset, info):
+        return _filter_by_accessible_uploads(queryset, info, "id")
+
 
 class IndividualDataSourceGQLType(DjangoObjectType):
     uuid = graphene.String(source='uuid')
@@ -117,6 +185,10 @@ class IndividualDataSourceGQLType(DjangoObjectType):
             **prefix_filterset("upload__", IndividualDataSourceUploadGQLType._meta.filter_fields),
         }
         connection_class = ExtendedConnection
+
+    @classmethod
+    def get_queryset(cls, queryset, info):
+        return _filter_by_accessible_uploads(queryset, info, "upload_id")
 
 
 class GroupGQLType(DjangoObjectType):
@@ -286,6 +358,12 @@ class IndividualDataUploadQGLType(DjangoObjectType, JsonExtMixin):
         }
         connection_class = ExtendedConnection
 
+    @classmethod
+    def get_queryset(cls, queryset, info):
+        return _filter_by_accessible_uploads(
+            queryset, info, "data_upload_id"
+        )
+
 
 class GroupDataSourceGQLType(DjangoObjectType):
     uuid = graphene.String(source='uuid')
@@ -303,6 +381,10 @@ class GroupDataSourceGQLType(DjangoObjectType):
             **prefix_filterset("upload__", IndividualDataSourceUploadGQLType._meta.filter_fields),
         }
         connection_class = ExtendedConnection
+
+    @classmethod
+    def get_queryset(cls, queryset, info):
+        return _filter_by_accessible_uploads(queryset, info, "upload_id")
 
 
 class GlobalSchemaType(graphene.ObjectType):

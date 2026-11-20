@@ -8,6 +8,7 @@ from django.db.models.query import QuerySet
 from typing import List
 
 from core.custom_filters import CustomFilterWizardInterface
+from core.utils import get_current_user
 from individual.apps import IndividualConfig
 from individual.models import Individual, Group, GroupIndividual
 
@@ -24,10 +25,18 @@ class IndividualCustomFilterWizard(CustomFilterWizardInterface):
 
     def load_definition(self, tuple_type: type, **kwargs) -> List[namedtuple]:
         individual_schema = IndividualConfig.individual_schema
-        additional_params = kwargs.get('additional_params', None)
+        additional_params = kwargs.get('additional_params') or {}
         benefit_plan_id = additional_params.get("benefitPlan", None)
-        if benefit_plan_id and 'social_protection' in apps.app_configs:
+        if benefit_plan_id and apps.is_installed("social_protection"):
+            from social_protection.benefit_plan_access import (
+                require_benefit_plan_access,
+            )
             from social_protection.models import BenefitPlan
+
+            require_benefit_plan_access(
+                get_current_user(),
+                benefit_plan_id,
+            )
             benefit_plan = BenefitPlan.objects.get(id=benefit_plan_id)
             if benefit_plan.beneficiary_data_schema and benefit_plan.beneficiary_data_schema != '{}':
                 return self.__process_schema_and_build_tuple(benefit_plan.beneficiary_data_schema, tuple_type)

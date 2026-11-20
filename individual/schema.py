@@ -2,7 +2,9 @@ import json
 import graphene
 import graphene_django_optimizer as gql_optimizer
 import pandas as pd
+from django.apps import apps
 from django.contrib.auth.models import AnonymousUser
+from django.core.exceptions import PermissionDenied
 from django.db.models import Q, OuterRef, Subquery, Value
 from django.db.models.functions import Concat
 
@@ -28,6 +30,25 @@ from individual.primary_recipients import (
     primary_worker_membership_filter,
 )
 from location.apps import LocationConfig
+
+
+def _require_benefit_plan_access(user, benefit_plan_id):
+    """Authorize a programme-scoped query when Social Protection is present."""
+    if not apps.is_installed("social_protection"):
+        return
+
+    from social_protection.apps import SocialProtectionConfig
+    from social_protection.benefit_plan_access import require_benefit_plan_access
+
+    require_benefit_plan_access(user, benefit_plan_id)
+    if SocialProtectionConfig.enable_benefit_plan_access_control:
+        from social_protection.models import BenefitPlan
+
+        if not BenefitPlan.objects.filter(
+            id=benefit_plan_id,
+            is_deleted=False,
+        ).exists():
+            raise PermissionDenied("Benefit Plan does not exist.")
 
 
 def patch_details(data_df: pd.DataFrame):
@@ -175,6 +196,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
 
         benefit_plan_id = kwargs.get("benefitPlanId")
         if benefit_plan_id:
+            _require_benefit_plan_access(info.context.user, benefit_plan_id)
             filters.append(
                 Q(is_deleted=False) & Q(
                     beneficiary__benefit_plan_id=benefit_plan_id
@@ -363,6 +385,7 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
 
         benefit_plan_id = kwargs.get("benefitPlanId")
         if benefit_plan_id:
+            _require_benefit_plan_access(info.context.user, benefit_plan_id)
             beneficiary_filters = Q(
                 groupbeneficiary__benefit_plan_id=benefit_plan_id,
                 groupbeneficiary__is_deleted=False,
