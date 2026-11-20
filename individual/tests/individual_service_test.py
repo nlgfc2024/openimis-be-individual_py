@@ -42,6 +42,84 @@ class IndividualServiceTest(TestCase):
         query = self.query_all.filter(uuid=uuid)
         self.assertEqual(query.count(), 1)
 
+    def test_create_cannot_set_payment_details_outside_kyc(self):
+        payload = copy.deepcopy(service_add_individual_payload)
+        payload["json_ext"]["account_number"] = "001234"
+
+        result = self.service.create(payload)
+
+        self.assertFalse(result.get("success", False))
+        self.assertIn("Python KYC Details workflow", str(result))
+
+    def test_direct_update_cannot_change_payment_details(self):
+        result = self.service.create(service_add_individual_payload)
+        individual = Individual.objects.get(uuid=result["data"]["uuid"])
+        individual.json_ext.update({
+            "account_number": "001234",
+            "account_name": "Test Recipient",
+            "bank": "TNM Mpamba",
+            "payment_provider_code": "TNM",
+        })
+        individual.save(user=self.user)
+        payload = copy.deepcopy(service_update_individual_payload)
+        payload.update({
+            "id": individual.id,
+            "json_ext": {
+                **individual.json_ext,
+                "account_number": "009999",
+            },
+        })
+
+        result = self.service.update(payload)
+
+        self.assertFalse(result.get("success", False))
+        individual.refresh_from_db()
+        self.assertEqual(individual.json_ext["account_number"], "001234")
+
+    def test_update_task_cannot_change_payment_details(self):
+        result = self.service.create(service_add_individual_payload)
+        individual = Individual.objects.get(uuid=result["data"]["uuid"])
+        individual.json_ext["account_number"] = "001234"
+        individual.save(user=self.user)
+        payload = copy.deepcopy(service_update_individual_payload)
+        payload.update({
+            "id": individual.id,
+            "json_ext": {
+                **individual.json_ext,
+                "account_number": "009999",
+            },
+        })
+
+        result = self.service.create_update_task(payload)
+
+        self.assertFalse(result.get("success", False))
+        individual.refresh_from_db()
+        self.assertEqual(individual.json_ext["account_number"], "001234")
+
+    def test_generic_update_preserves_existing_payment_details(self):
+        result = self.service.create(service_add_individual_payload)
+        individual = Individual.objects.get(uuid=result["data"]["uuid"])
+        individual.json_ext.update({
+            "account_number": "001234",
+            "account_name": "Test Recipient",
+            "bank": "TNM Mpamba",
+            "payment_provider_code": "TNM",
+        })
+        individual.save(user=self.user)
+        payload = copy.deepcopy(service_update_individual_payload)
+        payload.update({
+            "id": individual.id,
+            "json_ext": {"key": "updated"},
+        })
+
+        result = self.service.update(payload)
+
+        self.assertTrue(result.get("success", False), result.get("detail", "No details provided"))
+        individual.refresh_from_db()
+        self.assertEqual(individual.json_ext["account_number"], "001234")
+        self.assertEqual(individual.json_ext["payment_provider_code"], "TNM")
+        self.assertEqual(individual.json_ext["key"], "updated")
+
     def test_update_individual(self):
         result = self.service.create(service_add_individual_payload)
         self.assertTrue(result.get('success', False), result.get('detail', "No details provided"))

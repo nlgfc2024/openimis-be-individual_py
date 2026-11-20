@@ -7,6 +7,7 @@ import graphene_django_optimizer as gql_optimizer
 from core import prefix_filterset, ExtendedConnection
 from core.gql_queries import UserGQLType
 from individual.apps import IndividualConfig
+from individual.data_source import all_payment_details_fields
 from individual.models import Individual, IndividualDataSource, Group, GroupIndividual, \
     IndividualDataSourceUpload, IndividualDataUploadRecords, GroupDataSource
 from individual.primary_recipients import authoritative_primary_worker_memberships
@@ -84,6 +85,17 @@ def _have_permissions(user, permission):
     return user.has_perms(permission)
 
 
+def _json_ext_without_payment_details(json_ext):
+    if not isinstance(json_ext, dict):
+        return json_ext
+    payment_fields = all_payment_details_fields()
+    return {
+        key: value
+        for key, value in json_ext.items()
+        if key not in payment_fields
+    }
+
+
 class JsonExtMixin:
     def resolve_json_ext(self, info):
         if _have_permissions(info.context.user, IndividualConfig.gql_individual_search_perms):
@@ -93,6 +105,9 @@ class JsonExtMixin:
 
 class IndividualGQLType(DjangoObjectType):
     uuid = graphene.String(source='uuid')
+
+    def resolve_json_ext(self, info):
+        return _json_ext_without_payment_details(self.json_ext)
 
     class Meta:
         model = Individual
@@ -118,6 +133,9 @@ class IndividualGQLType(DjangoObjectType):
 class IndividualHistoryGQLType(DjangoObjectType):
     uuid = graphene.String(source='uuid')
     user_updated = graphene.Field(UserGQLType)
+
+    def resolve_json_ext(self, info):
+        return _json_ext_without_payment_details(self.json_ext)
 
     def resolve_user_updated(self, info):
         return self.user_updated
@@ -208,6 +226,9 @@ class GroupGQLType(DjangoObjectType):
     primary_recipient_account_name = graphene.String()
     primary_recipient_bank = graphene.String()
 
+    def resolve_json_ext(self, info):
+        return _json_ext_without_payment_details(self.json_ext)
+
     def resolve_head(self, info):
         return Individual.objects.filter(
             groupindividuals__group__id=self.id,
@@ -254,6 +275,9 @@ class GroupHistoryGQLType(DjangoObjectType):
     uuid = graphene.String(source='uuid')
     user_updated = graphene.Field(UserGQLType)
     head = graphene.Field(IndividualGQLType)
+
+    def resolve_json_ext(self, info):
+        return _json_ext_without_payment_details(self.json_ext)
 
     def resolve_head(self, info):
         return Individual.objects.filter(

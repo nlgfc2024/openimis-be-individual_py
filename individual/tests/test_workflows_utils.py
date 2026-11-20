@@ -99,7 +99,7 @@ class TestBasePythonWorkflowExecutor(TestCase):
     def test_standard_workflows_reject_payment_detail_columns(self):
         columns = [
             'first_name', 'last_name', 'dob', 'id', 'location_name', 'location_code',
-            'form_number', 'nid', 'account_number', 'account_name', 'bank',
+            'form_number', 'nid', 'account_number', 'account_name', 'bank', 'payment_provider_code',
         ]
         self.executor.df = pd.DataFrame([{column: '' for column in columns}], columns=columns)
 
@@ -121,6 +121,7 @@ class TestBasePythonWorkflowExecutor(TestCase):
         columns = [
             'first_name', 'last_name', 'dob', 'id', 'location_name', 'location_code',
             'ID', 'form_number', 'nid', 'account_number', 'account_name', 'bank',
+            'payment_provider_code',
         ]
         row = {column: '' for column in columns}
         row.update({
@@ -130,6 +131,7 @@ class TestBasePythonWorkflowExecutor(TestCase):
             'account_number': '001234',
             'account_name': 'Test Recipient',
             'bank': 'TNM Mpamba',
+            'payment_provider_code': 'TNM',
         })
         self.executor.df = pd.DataFrame([row], columns=columns)
 
@@ -170,6 +172,12 @@ class TestBasePythonWorkflowExecutor(TestCase):
             "village": "SAMI",
             "catchment": "Chete_micro",
         })
+        _validate_kyc_details_file(pd.DataFrame([row]))
+
+    def test_kyc_details_upload_accepts_optional_provider_code(self):
+        row = {field: "value" for field in payment_details_required_columns()}
+        row["payment_provider_code"] = "TNM"
+
         _validate_kyc_details_file(pd.DataFrame([row]))
 
     def test_kyc_details_upload_rejects_unexpected_columns(self):

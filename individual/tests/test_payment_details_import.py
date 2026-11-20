@@ -19,8 +19,10 @@ from individual.models import (
 )
 from individual.data_source import (
     KYC_DETAILS_WORKFLOW_NAME,
+    all_payment_details_fields,
     normalize_kyc_dataframe_headers,
     payment_details_template_columns,
+    payment_details_required_columns,
 )
 from individual.apps import IndividualConfig
 from individual.services import (
@@ -101,6 +103,7 @@ class PaymentDetailsExcelLoaderTests(SimpleTestCase):
             "Account number",
             "Account name",
             "Bank / provider",
+            "Payment provider code",
         ])
 
         normalized = normalize_kyc_dataframe_headers(dataframe)
@@ -119,6 +122,7 @@ class PaymentDetailsExcelLoaderTests(SimpleTestCase):
             "account_number",
             "account_name",
             "bank",
+            "payment_provider_code",
         ])
 
     def test_kyc_header_normalization_reports_alias_collisions(self):
@@ -141,9 +145,18 @@ class PaymentDetailsExcelLoaderTests(SimpleTestCase):
             "Account number": "00012345",
             "Account name": "MAUREEN BANDA",
             "Bank / provider": "TNM Mpamba",
+            "Payment provider code": "TNM",
         }])
 
         _validate_kyc_details_file(normalize_kyc_dataframe_headers(dataframe))
+
+    def test_provider_code_is_optional_but_restricted_to_kyc_fields(self):
+        row = {field: "value" for field in payment_details_required_columns()}
+        row["payment_provider_code"] = "TNM"
+
+        self.assertIn("payment_provider_code", all_payment_details_fields())
+        self.assertNotIn("payment_provider_code", payment_details_required_columns())
+        _validate_kyc_details_file(pd.DataFrame([row]))
 
     def test_household_kyc_export_headers_are_accepted(self):
         dataframe = pd.DataFrame([{

@@ -22,7 +22,7 @@ from individual.gql_queries import IndividualGQLType, IndividualHistoryGQLType, 
     GroupGQLType, GroupIndividualGQLType, \
     IndividualDataSourceUploadGQLType, GroupHistoryGQLType, IndividualDataUploadQGLType, \
     GroupIndividualHistoryGQLType, GlobalSchemaType, \
-    GroupDataSourceGQLType
+    GroupDataSourceGQLType, _json_ext_without_payment_details
 from individual.models import Individual, IndividualDataSource, Group, \
     GroupIndividual, IndividualDataSourceUpload, IndividualDataUploadRecords, GroupDataSource
 from individual.primary_recipients import (
@@ -54,6 +54,8 @@ def _require_benefit_plan_access(user, benefit_plan_id):
 def patch_details(data_df: pd.DataFrame):
     # Transform extension to DF columns
     if 'json_ext' in data_df:
+        data_df = data_df.copy()
+        data_df['json_ext'] = data_df['json_ext'].map(_json_ext_without_payment_details)
         df_unfolded = pd.json_normalize(data_df['json_ext'])
         # Merge unfolded DataFrame with the original DataFrame
         df_final = pd.concat([data_df, df_unfolded], axis=1)
@@ -417,7 +419,11 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
                 export_phase_name=Concat("code", Value(" "), "name"),
             ).values("export_phase_name")[:1]
             query = query.annotate(kyc_phase=Subquery(phase_name_query))
-        if kwargs.get("include_primary_recipient_data"):
+        if (
+            kwargs.get("include_primary_recipient_data")
+            and benefit_plan_id
+            and kwargs.get("primary_recipient_only")
+        ):
             from location.models import MicroCatchmentGVH
 
             primary_recipient_query = authoritative_primary_worker_memberships(

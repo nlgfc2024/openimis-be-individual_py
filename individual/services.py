@@ -7,6 +7,7 @@ from xml.etree import ElementTree
 import pandas as pd
 from pandas import DataFrame
 from django.core.files.uploadedfile import InMemoryUploadedFile
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Prefetch
 from openpyxl import load_workbook
@@ -22,6 +23,7 @@ from individual.apps import IndividualConfig
 from individual.data_source import (
     DATA_SOURCE_FIELD,
     KYC_DETAILS_WORKFLOW_NAME,
+    all_payment_details_fields,
     has_payment_details_columns,
     normalize_kyc_dataframe_headers,
     normalize_kyc_header,
@@ -240,16 +242,79 @@ def _load_ods_with_text_columns(import_file):
 class IndividualService(BaseService, UpdateCheckerLogicServiceMixin, DeleteCheckerLogicServiceMixin):
     @register_service_signal('individual_service.create')
     def create(self, obj_data):
+        try:
+            self._protect_payment_details(obj_data, creating=True)
+        except ValidationError as exc:
+            return output_exception(
+                model_name=self.OBJECT_TYPE.__name__,
+                method="create",
+                exception=exc,
+            )
         return super().create(obj_data)
 
     def create_update_task(self, obj_data):
-        self._update_json_ext(obj_data)
-        return super().create_update_task(obj_data)
+        try:
+            with transaction.atomic():
+                self._protect_payment_details(obj_data)
+                self._update_json_ext(obj_data)
+                return super().create_update_task(obj_data)
+        except ValidationError as exc:
+            return output_exception(
+                model_name=self.OBJECT_TYPE.__name__,
+                method="create_update_task",
+                exception=exc,
+            )
 
     @register_service_signal('individual_service.update')
     def update(self, obj_data):
-        self._update_json_ext(obj_data)
-        return super().update(obj_data)
+        try:
+            with transaction.atomic():
+                self._protect_payment_details(obj_data)
+                self._update_json_ext(obj_data)
+                return super().update(obj_data)
+        except ValidationError as exc:
+            return output_exception(
+                model_name=self.OBJECT_TYPE.__name__,
+                method="update",
+                exception=exc,
+            )
+
+    def _protect_payment_details(self, obj_data, creating=False):
+        if not obj_data or "json_ext" not in obj_data:
+            return
+
+        incoming = obj_data["json_ext"] or {}
+        if not isinstance(incoming, dict):
+            raise ValidationError("Individual jsonExt must be an object.")
+
+        payment_fields = all_payment_details_fields()
+        if creating:
+            if any(_has_import_value(incoming.get(field)) for field in payment_fields):
+                raise ValidationError(
+                    "Payment details can only be set through the Python KYC Details workflow."
+                )
+            return
+
+        individual = Individual.objects.select_for_update().filter(
+            id=obj_data.get("id"),
+        ).first()
+        if individual is None:
+            return
+        current = individual.json_ext if isinstance(individual.json_ext, dict) else {}
+        changed_fields = [
+            field
+            for field in payment_fields
+            if field in incoming and incoming[field] != current.get(field)
+        ]
+        if changed_fields:
+            raise ValidationError(
+                "Payment details can only be changed through the Python KYC Details workflow."
+            )
+
+        for field in payment_fields:
+            if field in current and field not in incoming:
+                incoming[field] = current[field]
+        obj_data["json_ext"] = incoming
 
     @register_service_signal('individual_service.delete')
     def delete(self, obj_data):
@@ -962,11 +1027,12 @@ class IndividualImportService:
             return
 
         payment_fields = sorted(payment_details_fields())
+        all_payment_fields = sorted(all_payment_details_fields())
         rows_by_form_number = {}
         raw_form_numbers = set()
         for field_validation in validated_dataframe:
             row = field_validation["row"]
-            if not any(_has_import_value(row.get(field)) for field in payment_fields):
+            if not any(_has_import_value(row.get(field)) for field in all_payment_fields):
                 continue
             form_number = _import_text(row.get("form_number"))
             if form_number:
@@ -993,7 +1059,7 @@ class IndividualImportService:
 
         for field_validation in validated_dataframe:
             row = field_validation["row"]
-            if not any(_has_import_value(row.get(field)) for field in payment_fields):
+            if not any(_has_import_value(row.get(field)) for field in all_payment_fields):
                 continue
 
             validations = field_validation["validations"]
@@ -1034,6 +1100,9 @@ class IndividualImportService:
                         "account_number",
                         "account_number must be text without scientific notation, decimals, or spaces.",
                     )
+            provider_code = row.get("payment_provider_code")
+            if _has_import_value(provider_code) and not isinstance(provider_code, str):
+                reject("payment_provider_code", "payment_provider_code must be provided as text.")
 
             if not form_number:
                 continue
@@ -1044,7 +1113,7 @@ class IndividualImportService:
                 submitted_details = {
                     tuple(
                         _normalize_import_text(item["row"].get(field))
-                        for field in ["nid", *payment_fields]
+                        for field in ["nid", *all_payment_fields]
                     )
                     for item in duplicate_rows
                 }
