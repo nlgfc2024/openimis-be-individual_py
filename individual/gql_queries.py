@@ -213,6 +213,10 @@ class IndividualDataSourceUploadGQLType(DjangoObjectType):
 
 class IndividualDataSourceGQLType(DjangoObjectType, JsonExtMixin):
     uuid = graphene.String(source='uuid')
+    payment_details = graphene.Field(KycPaymentDetailsGQLType)
+
+    def resolve_payment_details(self, info):
+        return _payment_details_for_user(self.json_ext, info.context.user)
 
     class Meta:
         model = IndividualDataSource

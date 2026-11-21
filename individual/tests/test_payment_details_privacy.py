@@ -77,6 +77,33 @@ class PaymentDetailsPrivacyTest(SimpleTestCase):
                 {"account_number": "001234", "bank": "TNM Mpamba"},
             )
 
+    def test_import_data_source_payment_details_requires_its_permission(self):
+        source = SimpleNamespace(json_ext={
+            "account_number": "001234",
+            "account_name": "Test Recipient",
+            "bank": "TNM Mpamba",
+            "payment_provider_code": "TNM",
+        })
+        user = Mock()
+        info = SimpleNamespace(context=SimpleNamespace(user=user))
+
+        with patch.object(IndividualConfig, "gql_kyc_payment_details_perms", ["159006"]):
+            user.has_perms.return_value = False
+            self.assertIsNone(
+                IndividualDataSourceGQLType.resolve_payment_details(source, info)
+            )
+
+            user.has_perms.return_value = True
+            self.assertEqual(
+                IndividualDataSourceGQLType.resolve_payment_details(source, info),
+                {
+                    "account_number": "001234",
+                    "account_name": "Test Recipient",
+                    "bank": "TNM Mpamba",
+                    "payment_provider_code": "TNM",
+                },
+            )
+
     def test_individual_export_rejects_payment_json_path_even_with_permission(self):
         user = Mock()
         user.has_perms.return_value = True
