@@ -20,6 +20,7 @@ DEFAULT_CONFIG = {
     "gql_individual_update_perms": ["159003"],
     "gql_individual_delete_perms": ["159004"],
     "gql_individual_undo_delete_perms": ["159005"],
+    "gql_kyc_payment_details_perms": ["159006"],
     "gql_group_search_perms": ["180001"],
     "gql_group_create_perms": ["180002"],
     "gql_group_update_perms": ["180003"],
@@ -75,6 +76,7 @@ class IndividualConfig(AppConfig):
     gql_individual_update_perms = None
     gql_individual_delete_perms = None
     gql_individual_undo_delete_perms = None
+    gql_kyc_payment_details_perms = None
     gql_group_search_perms = None
     gql_group_create_perms = None
     gql_group_update_perms = None
@@ -142,7 +144,7 @@ class IndividualConfig(AppConfig):
                 **configured_kyc,
             }
             return cfg
-        cfg["kyc_payment_details"] = {
+        merged_kyc_config = {
             **copy.deepcopy(DEFAULT_KYC_PAYMENT_DETAILS_CONFIG),
             **configured_kyc,
             "header_aliases": {
@@ -150,6 +152,13 @@ class IndividualConfig(AppConfig):
                 **configured_aliases,
             },
         }
+        if "payment_fields" in configured_kyc and "optional_payment_fields" not in configured_kyc:
+            configured_fields = set(merged_kyc_config["payment_fields"])
+            merged_kyc_config["optional_payment_fields"] = [
+                field for field in merged_kyc_config["optional_payment_fields"]
+                if field not in configured_fields
+            ]
+        cfg["kyc_payment_details"] = merged_kyc_config
         return cfg
 
     def _validate_module_config(self, instance):

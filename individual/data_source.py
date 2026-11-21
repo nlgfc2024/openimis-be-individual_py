@@ -8,12 +8,21 @@ from django.db.models.functions import Coalesce, NullIf
 DATA_SOURCE_FIELD = "data_source"
 DEFAULT_DATA_SOURCE = "ubr"
 KYC_DETAILS_WORKFLOW_NAME = "Python KYC Details"
-SUPPORTED_KYC_PAYMENT_FIELDS = frozenset({
+KYC_PAYMENT_DETAILS_FIELDS = (
     "account_number",
     "account_name",
     "bank",
     "payment_provider_code",
-})
+)
+SUPPORTED_KYC_PAYMENT_FIELDS = frozenset(KYC_PAYMENT_DETAILS_FIELDS)
+KYC_PAYMENT_RECONCILIATION_FIELDS = {
+    "gender": "Gender",
+    **{
+        field: field.replace("_", " ").title()
+        for field in KYC_PAYMENT_DETAILS_FIELDS
+        if field != "payment_provider_code"
+    },
+}
 DEFAULT_KYC_PAYMENT_DETAILS_CONFIG = {
     "payment_fields": ["account_number", "account_name", "bank"],
     "optional_payment_fields": ["payment_provider_code"],
@@ -87,11 +96,7 @@ def optional_payment_details_fields():
 
 
 def all_payment_details_fields():
-    return (
-        payment_details_fields()
-        | optional_payment_details_fields()
-        | SUPPORTED_KYC_PAYMENT_FIELDS
-    )
+    return payment_details_fields() | optional_payment_details_fields()
 
 
 def payment_details_location_columns():
@@ -121,9 +126,6 @@ def payment_details_text_fields():
     return {
         "form_number",
         "nid",
-        "account_number",
-        "account_name",
-        "bank",
         *all_payment_details_fields(),
     }
 

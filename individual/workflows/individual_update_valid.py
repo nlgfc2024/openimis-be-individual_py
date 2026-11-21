@@ -138,9 +138,8 @@ BEGIN
                         'account_number', ids."Json_ext"->>'account_number',
                         'account_name', ids."Json_ext"->>'account_name',
                         'bank', ids."Json_ext"->>'bank',
-                        'payment_provider_code', COALESCE(
-                            NULLIF(ids."Json_ext"->>'payment_provider_code', ''),
-                            individual_individual."Json_ext"->>'payment_provider_code'
+                        'payment_provider_code', NULLIF(
+                            BTRIM(ids."Json_ext"->>'payment_provider_code'), ''
                         ),
                         'national_id', COALESCE(
                             NULLIF(ids."Json_ext"->>'nid', ''),
@@ -336,9 +335,8 @@ BEGIN
                         'account_number', ids."Json_ext"->>'account_number',
                         'account_name', ids."Json_ext"->>'account_name',
                         'bank', ids."Json_ext"->>'bank',
-                        'payment_provider_code', COALESCE(
-                            NULLIF(ids."Json_ext"->>'payment_provider_code', ''),
-                            individual_individual."Json_ext"->>'payment_provider_code'
+                        'payment_provider_code', NULLIF(
+                            BTRIM(ids."Json_ext"->>'payment_provider_code'), ''
                         ),
                         'national_id', COALESCE(
                             NULLIF(ids."Json_ext"->>'nid', ''),

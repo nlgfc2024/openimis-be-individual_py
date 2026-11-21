@@ -23,6 +23,7 @@ from individual.apps import IndividualConfig
 from individual.data_source import (
     DATA_SOURCE_FIELD,
     KYC_DETAILS_WORKFLOW_NAME,
+    SUPPORTED_KYC_PAYMENT_FIELDS,
     all_payment_details_fields,
     has_payment_details_columns,
     normalize_kyc_dataframe_headers,
@@ -80,6 +81,13 @@ def _normalize_import_text(value):
 
 def _has_import_value(value):
     return bool(_import_text(value))
+
+
+def _normalize_payment_detail_value(value):
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
 
 
 def _recipient_identity_summary(individual, national_id=None):
@@ -255,7 +263,7 @@ class IndividualService(BaseService, UpdateCheckerLogicServiceMixin, DeleteCheck
     def create_update_task(self, obj_data):
         try:
             with transaction.atomic():
-                self._protect_payment_details(obj_data)
+                self._protect_payment_details(obj_data, for_task=True)
                 self._update_json_ext(obj_data)
                 return super().create_update_task(obj_data)
         except ValidationError as exc:
@@ -279,42 +287,82 @@ class IndividualService(BaseService, UpdateCheckerLogicServiceMixin, DeleteCheck
                 exception=exc,
             )
 
-    def _protect_payment_details(self, obj_data, creating=False):
-        if not obj_data or "json_ext" not in obj_data:
+    def _protect_payment_details(self, obj_data, creating=False, for_task=False):
+        if not obj_data:
             return
 
-        incoming = obj_data["json_ext"] or {}
-        if not isinstance(incoming, dict):
+        has_json_ext = "json_ext" in obj_data
+        incoming = obj_data.get("json_ext")
+        if incoming is None:
+            incoming = {}
+        elif not isinstance(incoming, dict):
             raise ValidationError("Individual jsonExt must be an object.")
 
-        payment_fields = all_payment_details_fields()
+        payment_fields = SUPPORTED_KYC_PAYMENT_FIELDS
         if creating:
-            if any(_has_import_value(incoming.get(field)) for field in payment_fields):
+            if any(
+                _has_import_value(incoming.get(field))
+                or _has_import_value(obj_data.get(field))
+                for field in payment_fields
+            ):
                 raise ValidationError(
                     "Payment details can only be set through the Python KYC Details workflow."
                 )
+            for field in payment_fields:
+                obj_data.pop(field, None)
+            if has_json_ext:
+                obj_data["json_ext"] = incoming
+            return
+
+        if not has_json_ext and not any(field in obj_data for field in payment_fields):
             return
 
         individual = Individual.objects.select_for_update().filter(
             id=obj_data.get("id"),
         ).first()
         if individual is None:
+            for field in payment_fields:
+                requested_values = []
+                if field in incoming:
+                    requested_values.append(incoming[field])
+                if field in obj_data:
+                    requested_values.append(obj_data[field])
+                if for_task and any(
+                    _normalize_payment_detail_value(value) is not None
+                    for value in requested_values
+                ):
+                    raise ValidationError(
+                        "Payment details cannot be changed without a valid Individual."
+                    )
+                incoming.pop(field, None)
+                obj_data.pop(field, None)
+            if has_json_ext:
+                obj_data["json_ext"] = incoming
             return
         current = individual.json_ext if isinstance(individual.json_ext, dict) else {}
-        changed_fields = [
-            field
-            for field in payment_fields
-            if field in incoming and incoming[field] != current.get(field)
-        ]
-        if changed_fields:
-            raise ValidationError(
-                "Payment details can only be changed through the Python KYC Details workflow."
-            )
-
         for field in payment_fields:
-            if field in current and field not in incoming:
-                incoming[field] = current[field]
-        obj_data["json_ext"] = incoming
+            requested_values = []
+            if field in incoming:
+                requested_values.append(incoming[field])
+            if field in obj_data:
+                requested_values.append(obj_data[field])
+            if for_task and any(
+                _normalize_payment_detail_value(value)
+                != _normalize_payment_detail_value(current.get(field))
+                for value in requested_values
+            ):
+                raise ValidationError(
+                    "Payment details can only be changed through the Python KYC Details workflow."
+                )
+            incoming.pop(field, None)
+            obj_data.pop(field, None)
+
+        if has_json_ext and not for_task:
+            for field in payment_fields:
+                if field in current:
+                    incoming[field] = current[field]
+        if has_json_ext:
+            obj_data["json_ext"] = incoming
 
     @register_service_signal('individual_service.delete')
     def delete(self, obj_data):

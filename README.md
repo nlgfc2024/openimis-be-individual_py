@@ -80,6 +80,7 @@ Benefit Plan.
 * gql_individual_create_perms: required rights to call createIndividual GraphQL Mutation (default: ["159002"])
 * gql_individual_update_perms: required rights to call updateIndividual GraphQL Mutation (default: ["159003"])
 * gql_individual_delete_perms: required rights to call deleteIndividual GraphQL Mutation (default: ["159004"])
+* gql_kyc_payment_details_perms: required rights to query Individual paymentDetails (default: ["159006"])
 * gql_group_search_perms: required rights to call group GraphQL Mutation (default: ["180001"])
 * gql_group_create_perms: required rights to call createGroup and addIndividualToGroup and createGroupIndividuals GraphQL Mutation (default: ["180002"])
 * gql_group_update_perms: required rights to call updateGroup and editIndividualInGroup GraphQL Mutation (default: ["180003"])
@@ -136,6 +137,13 @@ Supported stored payment keys are `account_number`, `account_name`, `bank`, and
 through `header_aliases`, mapping each heading to its corresponding stored key.
 Payment details can only be created or changed through the approved KYC
 workflow; generic Individual edits and imports cannot change them.
+
+The `paymentDetails` GraphQL field is permission-gated by
+`gql_kyc_payment_details_perms`. General `jsonExt` responses and generic
+exports omit payment details. Explicit account columns in a phase-scoped,
+primary-recipient group export also require this right. The migration grants
+right `159006` to the IMIS administrator role when that role exists; grant the
+right to any other roles that need to view payment details.
 
 
 ## Additional Field Definition
