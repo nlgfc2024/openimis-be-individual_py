@@ -13,8 +13,8 @@ from core.models import User
 from individual.apps import IndividualConfig
 from individual.data_source import (
     DATA_SOURCE_FIELD,
+    all_payment_details_fields,
     has_payment_details_columns,
-    payment_details_fields,
     payment_details_required_columns,
 )
 from individual.models import IndividualDataSource
@@ -59,9 +59,9 @@ class BasePythonWorkflowExecutor(metaclass=ABCMeta):
         df_headers = set(self.df.columns)
         schema_properties = set(self.schema.get('properties', {}).keys())
         schema_properties.update(['recipient_info', 'group_code', 'individual_role', DATA_SOURCE_FIELD])
-        payment_fields = payment_details_fields()
+        all_payment_fields = all_payment_details_fields()
         required_payment_columns = payment_details_required_columns()
-        payment_detail_columns = payment_fields | {'nid'}
+        payment_detail_columns = all_payment_fields | {'nid'}
         supplied_payment_columns = payment_detail_columns.intersection(df_headers)
         if supplied_payment_columns and not allow_payment_details:
             raise PythonWorkflowHandlerException(
@@ -70,12 +70,12 @@ class BasePythonWorkflowExecutor(metaclass=ABCMeta):
                 )
             )
         if allow_payment_details:
-            schema_properties.update(required_payment_columns)
+            schema_properties.update(required_payment_columns | all_payment_fields)
         payment_details_update = has_payment_details_columns(df_headers) and any(
             self.df[field].map(
                 lambda value: value is not None and not pd.isna(value) and bool(str(value).strip())
             ).any()
-            for field in payment_fields
+            for field in all_payment_fields
             if field in df_headers
         )
         if payment_details_update and not is_update:

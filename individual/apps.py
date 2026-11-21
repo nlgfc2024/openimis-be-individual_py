@@ -7,7 +7,10 @@ from django.apps import AppConfig
 from core.custom_filters import CustomFilterRegistryPoint
 from core.data_masking import MaskingClassRegistryPoint
 from core.module_config_registry import register_validator, register_reloader
-from individual.data_source import DEFAULT_KYC_PAYMENT_DETAILS_CONFIG
+from individual.data_source import (
+    DEFAULT_KYC_PAYMENT_DETAILS_CONFIG,
+    SUPPORTED_KYC_PAYMENT_FIELDS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +20,7 @@ DEFAULT_CONFIG = {
     "gql_individual_update_perms": ["159003"],
     "gql_individual_delete_perms": ["159004"],
     "gql_individual_undo_delete_perms": ["159005"],
+    "gql_kyc_payment_details_perms": ["159006"],
     "gql_group_search_perms": ["180001"],
     "gql_group_create_perms": ["180002"],
     "gql_group_update_perms": ["180003"],
@@ -72,6 +76,7 @@ class IndividualConfig(AppConfig):
     gql_individual_update_perms = None
     gql_individual_delete_perms = None
     gql_individual_undo_delete_perms = None
+    gql_kyc_payment_details_perms = None
     gql_group_search_perms = None
     gql_group_create_perms = None
     gql_group_update_perms = None
@@ -139,7 +144,7 @@ class IndividualConfig(AppConfig):
                 **configured_kyc,
             }
             return cfg
-        cfg["kyc_payment_details"] = {
+        merged_kyc_config = {
             **copy.deepcopy(DEFAULT_KYC_PAYMENT_DETAILS_CONFIG),
             **configured_kyc,
             "header_aliases": {
@@ -147,6 +152,13 @@ class IndividualConfig(AppConfig):
                 **configured_aliases,
             },
         }
+        if "payment_fields" in configured_kyc and "optional_payment_fields" not in configured_kyc:
+            configured_fields = set(merged_kyc_config["payment_fields"])
+            merged_kyc_config["optional_payment_fields"] = [
+                field for field in merged_kyc_config["optional_payment_fields"]
+                if field not in configured_fields
+            ]
+        cfg["kyc_payment_details"] = merged_kyc_config
         return cfg
 
     def _validate_module_config(self, instance):
@@ -193,7 +205,13 @@ class IndividualConfig(AppConfig):
     @classmethod
     def __validate_kyc_payment_details(cls, cfg):
         config = cfg.get("kyc_payment_details")
-        list_keys = ("payment_fields", "location_columns", "context_columns", "template_columns")
+        list_keys = (
+            "payment_fields",
+            "optional_payment_fields",
+            "location_columns",
+            "context_columns",
+            "template_columns",
+        )
         if not isinstance(config, dict):
             raise ValueError("kyc_payment_details must be an object")
         for key in list_keys:
@@ -202,12 +220,20 @@ class IndividualConfig(AppConfig):
                 isinstance(value, str) and value.strip() for value in values
             ):
                 raise ValueError(f"kyc_payment_details.{key} must be a list of non-empty strings")
-        supported_payment_fields = {"account_number", "account_name", "bank"}
-        if not set(config["payment_fields"]).issubset(supported_payment_fields):
+        configured_payment_fields = set(config["payment_fields"])
+        optional_payment_fields = set(config["optional_payment_fields"])
+        if not configured_payment_fields.union(optional_payment_fields).issubset(
+            SUPPORTED_KYC_PAYMENT_FIELDS
+        ):
             raise ValueError(
-                "kyc_payment_details.payment_fields must use account_number, account_name, or bank"
+                "kyc_payment_details payment fields must use account_number, account_name, "
+                "bank, or payment_provider_code"
             )
-        if "account_number" not in config["payment_fields"]:
+        if configured_payment_fields.intersection(optional_payment_fields):
+            raise ValueError(
+                "kyc_payment_details.payment_fields and optional_payment_fields must be distinct"
+            )
+        if "account_number" not in configured_payment_fields:
             raise ValueError("kyc_payment_details.payment_fields must include account_number")
         aliases = config.get("header_aliases")
         if not isinstance(aliases, dict) or not all(

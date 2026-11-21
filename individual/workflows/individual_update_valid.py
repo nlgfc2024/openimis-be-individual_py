@@ -94,6 +94,7 @@ BEGIN
                         NULLIF(BTRIM(ids."Json_ext"->>'account_number'), '') IS NOT NULL
                         OR NULLIF(BTRIM(ids."Json_ext"->>'account_name'), '') IS NOT NULL
                         OR NULLIF(BTRIM(ids."Json_ext"->>'bank'), '') IS NOT NULL
+                        OR NULLIF(BTRIM(ids."Json_ext"->>'payment_provider_code'), '') IS NOT NULL
                     ) THEN first_name
                     ELSE COALESCE(ids."Json_ext"->>'first_name', first_name)
                 END,
@@ -102,6 +103,7 @@ BEGIN
                         NULLIF(BTRIM(ids."Json_ext"->>'account_number'), '') IS NOT NULL
                         OR NULLIF(BTRIM(ids."Json_ext"->>'account_name'), '') IS NOT NULL
                         OR NULLIF(BTRIM(ids."Json_ext"->>'bank'), '') IS NOT NULL
+                        OR NULLIF(BTRIM(ids."Json_ext"->>'payment_provider_code'), '') IS NOT NULL
                     ) THEN last_name
                     ELSE COALESCE(ids."Json_ext"->>'last_name', last_name)
                 END,
@@ -110,6 +112,7 @@ BEGIN
                         NULLIF(BTRIM(ids."Json_ext"->>'account_number'), '') IS NOT NULL
                         OR NULLIF(BTRIM(ids."Json_ext"->>'account_name'), '') IS NOT NULL
                         OR NULLIF(BTRIM(ids."Json_ext"->>'bank'), '') IS NOT NULL
+                        OR NULLIF(BTRIM(ids."Json_ext"->>'payment_provider_code'), '') IS NOT NULL
                     ) THEN dob
                     ELSE COALESCE(to_date(ids."Json_ext"->>'dob', 'YYYY-MM-DD'), dob)
                 END,
@@ -118,6 +121,7 @@ BEGIN
                         NULLIF(BTRIM(ids."Json_ext"->>'account_number'), '') IS NOT NULL
                         OR NULLIF(BTRIM(ids."Json_ext"->>'account_name'), '') IS NOT NULL
                         OR NULLIF(BTRIM(ids."Json_ext"->>'bank'), '') IS NOT NULL
+                        OR NULLIF(BTRIM(ids."Json_ext"->>'payment_provider_code'), '') IS NOT NULL
                     )
                     THEN individual_individual.location_id
                     ELSE loc."LocationId"
@@ -128,11 +132,15 @@ BEGIN
                         NULLIF(BTRIM(ids."Json_ext"->>'account_number'), '') IS NOT NULL
                         OR NULLIF(BTRIM(ids."Json_ext"->>'account_name'), '') IS NOT NULL
                         OR NULLIF(BTRIM(ids."Json_ext"->>'bank'), '') IS NOT NULL
+                        OR NULLIF(BTRIM(ids."Json_ext"->>'payment_provider_code'), '') IS NOT NULL
                     )
                     THEN COALESCE(individual_individual."Json_ext", '{}'::jsonb) || jsonb_build_object(
                         'account_number', ids."Json_ext"->>'account_number',
                         'account_name', ids."Json_ext"->>'account_name',
                         'bank', ids."Json_ext"->>'bank',
+                        'payment_provider_code', NULLIF(
+                            BTRIM(ids."Json_ext"->>'payment_provider_code'), ''
+                        ),
                         'national_id', COALESCE(
                             NULLIF(ids."Json_ext"->>'nid', ''),
                             individual_individual."Json_ext"->>'national_id'
@@ -150,6 +158,10 @@ BEGIN
                         'bank', COALESCE(
                             NULLIF(ids."Json_ext"->>'bank', ''),
                             individual_individual."Json_ext"->>'bank'
+                        ),
+                        'payment_provider_code', COALESCE(
+                            NULLIF(ids."Json_ext"->>'payment_provider_code', ''),
+                            individual_individual."Json_ext"->>'payment_provider_code'
                         ),
                         'national_id', COALESCE(
                             NULLIF(ids."Json_ext"->>'national_id', ''),
@@ -279,6 +291,7 @@ BEGIN
                         NULLIF(BTRIM(ids."Json_ext"->>'account_number'), '') IS NOT NULL
                         OR NULLIF(BTRIM(ids."Json_ext"->>'account_name'), '') IS NOT NULL
                         OR NULLIF(BTRIM(ids."Json_ext"->>'bank'), '') IS NOT NULL
+                        OR NULLIF(BTRIM(ids."Json_ext"->>'payment_provider_code'), '') IS NOT NULL
                     ) THEN first_name
                     ELSE COALESCE(ids."Json_ext"->>'first_name', first_name)
                 END,
@@ -287,6 +300,7 @@ BEGIN
                         NULLIF(BTRIM(ids."Json_ext"->>'account_number'), '') IS NOT NULL
                         OR NULLIF(BTRIM(ids."Json_ext"->>'account_name'), '') IS NOT NULL
                         OR NULLIF(BTRIM(ids."Json_ext"->>'bank'), '') IS NOT NULL
+                        OR NULLIF(BTRIM(ids."Json_ext"->>'payment_provider_code'), '') IS NOT NULL
                     ) THEN last_name
                     ELSE COALESCE(ids."Json_ext"->>'last_name', last_name)
                 END,
@@ -295,6 +309,7 @@ BEGIN
                         NULLIF(BTRIM(ids."Json_ext"->>'account_number'), '') IS NOT NULL
                         OR NULLIF(BTRIM(ids."Json_ext"->>'account_name'), '') IS NOT NULL
                         OR NULLIF(BTRIM(ids."Json_ext"->>'bank'), '') IS NOT NULL
+                        OR NULLIF(BTRIM(ids."Json_ext"->>'payment_provider_code'), '') IS NOT NULL
                     ) THEN dob
                     ELSE COALESCE(to_date(ids."Json_ext"->>'dob', 'YYYY-MM-DD'), dob)
                 END,
@@ -303,6 +318,7 @@ BEGIN
                         NULLIF(BTRIM(ids."Json_ext"->>'account_number'), '') IS NOT NULL
                         OR NULLIF(BTRIM(ids."Json_ext"->>'account_name'), '') IS NOT NULL
                         OR NULLIF(BTRIM(ids."Json_ext"->>'bank'), '') IS NOT NULL
+                        OR NULLIF(BTRIM(ids."Json_ext"->>'payment_provider_code'), '') IS NOT NULL
                     )
                     THEN individual_individual.location_id
                     ELSE loc."LocationId"
@@ -313,11 +329,15 @@ BEGIN
                         NULLIF(BTRIM(ids."Json_ext"->>'account_number'), '') IS NOT NULL
                         OR NULLIF(BTRIM(ids."Json_ext"->>'account_name'), '') IS NOT NULL
                         OR NULLIF(BTRIM(ids."Json_ext"->>'bank'), '') IS NOT NULL
+                        OR NULLIF(BTRIM(ids."Json_ext"->>'payment_provider_code'), '') IS NOT NULL
                     )
                     THEN COALESCE(individual_individual."Json_ext", '{}'::jsonb) || jsonb_build_object(
                         'account_number', ids."Json_ext"->>'account_number',
                         'account_name', ids."Json_ext"->>'account_name',
                         'bank', ids."Json_ext"->>'bank',
+                        'payment_provider_code', NULLIF(
+                            BTRIM(ids."Json_ext"->>'payment_provider_code'), ''
+                        ),
                         'national_id', COALESCE(
                             NULLIF(ids."Json_ext"->>'nid', ''),
                             individual_individual."Json_ext"->>'national_id'
@@ -335,6 +355,10 @@ BEGIN
                         'bank', COALESCE(
                             NULLIF(ids."Json_ext"->>'bank', ''),
                             individual_individual."Json_ext"->>'bank'
+                        ),
+                        'payment_provider_code', COALESCE(
+                            NULLIF(ids."Json_ext"->>'payment_provider_code', ''),
+                            individual_individual."Json_ext"->>'payment_provider_code'
                         )
                     ))
                 END
