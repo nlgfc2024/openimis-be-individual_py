@@ -4,7 +4,7 @@ import graphene_django_optimizer as gql_optimizer
 import pandas as pd
 from django.apps import apps
 from django.contrib.auth.models import AnonymousUser
-from django.core.exceptions import PermissionDenied
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.db.models import Q, OuterRef, Subquery, Value
 from django.db.models.functions import Concat
 
@@ -14,6 +14,7 @@ from core.schema import OrderedDjangoFilterConnectionField
 from core.services import wait_for_mutation
 from core.utils import append_validity_filter, is_valid_uuid
 from individual.apps import IndividualConfig
+from individual.data_source import SUPPORTED_KYC_PAYMENT_FIELDS
 from individual.gql_mutations import CreateIndividualMutation, UpdateIndividualMutation, DeleteIndividualMutation, \
     CreateGroupMutation, UpdateGroupMutation, DeleteGroupMutation, CreateGroupIndividualMutation, \
     UpdateGroupIndividualMutation, DeleteGroupIndividualMutation, \
@@ -22,7 +23,8 @@ from individual.gql_queries import IndividualGQLType, IndividualHistoryGQLType, 
     GroupGQLType, GroupIndividualGQLType, \
     IndividualDataSourceUploadGQLType, GroupHistoryGQLType, IndividualDataUploadQGLType, \
     GroupIndividualHistoryGQLType, GlobalSchemaType, \
-    GroupDataSourceGQLType
+    GroupDataSourceGQLType, _json_ext_without_payment_details, \
+    has_kyc_payment_details_access
 from individual.models import Individual, IndividualDataSource, Group, \
     GroupIndividual, IndividualDataSourceUpload, IndividualDataUploadRecords, GroupDataSource
 from individual.primary_recipients import (
@@ -54,12 +56,31 @@ def _require_benefit_plan_access(user, benefit_plan_id):
 def patch_details(data_df: pd.DataFrame):
     # Transform extension to DF columns
     if 'json_ext' in data_df:
+        data_df = data_df.copy()
+        data_df['json_ext'] = data_df['json_ext'].map(_json_ext_without_payment_details)
         df_unfolded = pd.json_normalize(data_df['json_ext'])
         # Merge unfolded DataFrame with the original DataFrame
         df_final = pd.concat([data_df, df_unfolded], axis=1)
         df_final = df_final.drop('json_ext', axis=1)
         return df_final
     return data_df
+
+
+def _is_payment_details_json_column(column):
+    parts = column.split("__")
+    return any(
+        part == "json_ext"
+        and index + 1 < len(parts)
+        and parts[index + 1] in SUPPORTED_KYC_PAYMENT_FIELDS
+        for index, part in enumerate(parts)
+    )
+
+
+def _is_primary_recipient_payment_column(column):
+    return column in {
+        f"primary_recipient_{field}"
+        for field in SUPPORTED_KYC_PAYMENT_FIELDS
+    }
 
 
 class Query(ExportableQueryMixin, graphene.ObjectType):
@@ -79,6 +100,52 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
     object_type = "Individual"
     object_type_group = "Group"
     related_field_individual = "groupindividuals__individual"
+
+    @classmethod
+    def create_export_function(cls, field_name):
+        super().create_export_function(field_name)
+        resolver_name = f"resolve_{field_name}_export"
+        export_resolver = getattr(cls, resolver_name)
+
+        def guarded_export(root, info, **kwargs):
+            requested_fields = kwargs.get("fields")
+            normalized_fields = [
+                cls._adjust_notation(field)
+                for field in requested_fields
+                if isinstance(field, str)
+            ] if isinstance(requested_fields, (list, tuple)) else []
+            sensitive_json_fields = [
+                field for field in normalized_fields
+                if _is_payment_details_json_column(field)
+            ]
+            primary_recipient_payment_fields = [
+                field for field in normalized_fields
+                if _is_primary_recipient_payment_column(field)
+            ]
+
+            if sensitive_json_fields:
+                raise ValidationError(
+                    "Payment details cannot be selected through jsonExt export paths."
+                )
+            if primary_recipient_payment_fields:
+                if not has_kyc_payment_details_access(info.context.user):
+                    raise PermissionDenied(
+                        "You do not have permission to export KYC payment details."
+                    )
+            if field_name == "group" and (
+                primary_recipient_payment_fields
+            ) and not (
+                kwargs.get("benefitPlanId")
+                and kwargs.get("primary_recipient_only")
+                and kwargs.get("include_primary_recipient_data")
+            ):
+                raise ValidationError(
+                    "Group payment details can only be exported for a "
+                    "phase-scoped primary-recipient export."
+                )
+            return export_resolver(root, info, **kwargs)
+
+        setattr(cls, resolver_name, guarded_export)
 
     individual = OrderedDjangoFilterConnectionField(
         IndividualGQLType,
@@ -442,35 +509,45 @@ class Query(ExportableQueryMixin, graphene.ObjectType):
                     ).values("micro_catchment__name")[:1]
                 )
             ).values("primary_catchment")[:1]
-            query = query.annotate(
-                kyc_catchment=Subquery(catchment_query),
-                primary_recipient_first_name=Subquery(
+            primary_recipient_annotations = {
+                "kyc_catchment": Subquery(catchment_query),
+                "primary_recipient_first_name": Subquery(
                     primary_recipient_query.values("individual__first_name")[:1]
                 ),
-                primary_recipient_last_name=Subquery(
+                "primary_recipient_last_name": Subquery(
                     primary_recipient_query.values("individual__last_name")[:1]
                 ),
-                primary_recipient_full_name=Subquery(
+                "primary_recipient_full_name": Subquery(
                     primary_recipient_name_query.values("full_name")[:1]
                 ),
-                primary_recipient_dob=Subquery(
+                "primary_recipient_dob": Subquery(
                     primary_recipient_query.values("individual__dob")[:1]
                 ),
-                primary_recipient_gender=Subquery(
+                "primary_recipient_gender": Subquery(
                     primary_recipient_query.values("individual__json_ext__gender")[:1]
                 ),
-                primary_recipient_national_id=Subquery(
+                "primary_recipient_national_id": Subquery(
                     primary_recipient_query.values("individual__json_ext__national_id")[:1]
                 ),
-                primary_recipient_account_number=Subquery(
-                    primary_recipient_query.values("individual__json_ext__account_number")[:1]
-                ),
-                primary_recipient_account_name=Subquery(
-                    primary_recipient_query.values("individual__json_ext__account_name")[:1]
-                ),
-                primary_recipient_bank=Subquery(
-                    primary_recipient_query.values("individual__json_ext__bank")[:1]
-                ),
+            }
+            if (
+                benefit_plan_id
+                and kwargs.get("primary_recipient_only")
+                and has_kyc_payment_details_access(info.context.user)
+            ):
+                primary_recipient_annotations.update({
+                    "primary_recipient_account_number": Subquery(
+                        primary_recipient_query.values("individual__json_ext__account_number")[:1]
+                    ),
+                    "primary_recipient_account_name": Subquery(
+                        primary_recipient_query.values("individual__json_ext__account_name")[:1]
+                    ),
+                    "primary_recipient_bank": Subquery(
+                        primary_recipient_query.values("individual__json_ext__bank")[:1]
+                    ),
+                })
+            query = query.annotate(
+                **primary_recipient_annotations,
             )
 
         custom_filters = kwargs.get("customFilters", None)

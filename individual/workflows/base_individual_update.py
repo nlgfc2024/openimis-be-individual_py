@@ -5,6 +5,7 @@ import pandas as pd
 from core.models import User
 from individual.data_source import (
     KYC_DETAILS_WORKFLOW_NAME,
+    optional_payment_details_fields,
     payment_details_context_columns,
     payment_details_required_columns,
 )
@@ -56,6 +57,7 @@ def _validate_kyc_details_file(dataframe):
 
     allowed_columns = (
         required_columns
+        | optional_payment_details_fields()
         | payment_details_context_columns()
         | {"dob", "id", "ID"}
     )
@@ -183,6 +185,7 @@ BEGIN
                         NULLIF(BTRIM(f."Json_ext"->>'account_number'), '') IS NOT NULL
                         OR NULLIF(BTRIM(f."Json_ext"->>'account_name'), '') IS NOT NULL
                         OR NULLIF(BTRIM(f."Json_ext"->>'bank'), '') IS NOT NULL
+                        OR NULLIF(BTRIM(f."Json_ext"->>'payment_provider_code'), '') IS NOT NULL
                     ) THEN first_name
                     ELSE COALESCE(f."Json_ext"->>'first_name', first_name)
                 END,
@@ -191,6 +194,7 @@ BEGIN
                         NULLIF(BTRIM(f."Json_ext"->>'account_number'), '') IS NOT NULL
                         OR NULLIF(BTRIM(f."Json_ext"->>'account_name'), '') IS NOT NULL
                         OR NULLIF(BTRIM(f."Json_ext"->>'bank'), '') IS NOT NULL
+                        OR NULLIF(BTRIM(f."Json_ext"->>'payment_provider_code'), '') IS NOT NULL
                     ) THEN last_name
                     ELSE COALESCE(f."Json_ext"->>'last_name', last_name)
                 END,
@@ -199,6 +203,7 @@ BEGIN
                         NULLIF(BTRIM(f."Json_ext"->>'account_number'), '') IS NOT NULL
                         OR NULLIF(BTRIM(f."Json_ext"->>'account_name'), '') IS NOT NULL
                         OR NULLIF(BTRIM(f."Json_ext"->>'bank'), '') IS NOT NULL
+                        OR NULLIF(BTRIM(f."Json_ext"->>'payment_provider_code'), '') IS NOT NULL
                     ) THEN dob
                     ELSE COALESCE(to_date(f."Json_ext"->>'dob', 'YYYY-MM-DD'), dob)
                 END,
@@ -207,6 +212,7 @@ BEGIN
                         NULLIF(BTRIM(f."Json_ext"->>'account_number'), '') IS NOT NULL
                         OR NULLIF(BTRIM(f."Json_ext"->>'account_name'), '') IS NOT NULL
                         OR NULLIF(BTRIM(f."Json_ext"->>'bank'), '') IS NOT NULL
+                        OR NULLIF(BTRIM(f."Json_ext"->>'payment_provider_code'), '') IS NOT NULL
                     )
                     THEN individual_individual.location_id
                     ELSE loc."LocationId"
@@ -217,11 +223,16 @@ BEGIN
                         NULLIF(BTRIM(f."Json_ext"->>'account_number'), '') IS NOT NULL
                         OR NULLIF(BTRIM(f."Json_ext"->>'account_name'), '') IS NOT NULL
                         OR NULLIF(BTRIM(f."Json_ext"->>'bank'), '') IS NOT NULL
+                        OR NULLIF(BTRIM(f."Json_ext"->>'payment_provider_code'), '') IS NOT NULL
                     )
                     THEN COALESCE(individual_individual."Json_ext", '{}'::jsonb) || jsonb_build_object(
                         'account_number', f."Json_ext"->>'account_number',
                         'account_name', f."Json_ext"->>'account_name',
-                        'bank', f."Json_ext"->>'bank'
+                        'bank', f."Json_ext"->>'bank',
+                        'payment_provider_code', COALESCE(
+                            NULLIF(f."Json_ext"->>'payment_provider_code', ''),
+                            individual_individual."Json_ext"->>'payment_provider_code'
+                        )
                     )
                     ELSE COALESCE(f."Json_ext", '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object(
                         'account_number', COALESCE(
@@ -235,6 +246,10 @@ BEGIN
                         'bank', COALESCE(
                             NULLIF(f."Json_ext"->>'bank', ''),
                             individual_individual."Json_ext"->>'bank'
+                        ),
+                        'payment_provider_code', COALESCE(
+                            NULLIF(f."Json_ext"->>'payment_provider_code', ''),
+                            individual_individual."Json_ext"->>'payment_provider_code'
                         )
                     ))
                 END
@@ -250,6 +265,7 @@ BEGIN
                     NULLIF(BTRIM(f."Json_ext"->>'account_number'), '') IS NOT NULL
                     OR NULLIF(BTRIM(f."Json_ext"->>'account_name'), '') IS NOT NULL
                     OR NULLIF(BTRIM(f."Json_ext"->>'bank'), '') IS NOT NULL
+                    OR NULLIF(BTRIM(f."Json_ext"->>'payment_provider_code'), '') IS NOT NULL
                 )
                 OR f.validations ->> 'validation_errors' = '[]'
             )

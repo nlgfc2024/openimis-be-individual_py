@@ -87,6 +87,7 @@ class TestView(APITestCase):
         self.assertEqual(next(csv.reader(content.splitlines())), [
             "form_number", "district", "ta", "gvh", "village", "catchment",
             "first_name", "last_name", "nid", "account_number", "account_name", "bank",
+            "payment_provider_code",
         ])
 
     def test_download_template_file_on_individual_schema_update(self):

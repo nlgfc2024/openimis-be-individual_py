@@ -8,8 +8,24 @@ from django.db.models.functions import Coalesce, NullIf
 DATA_SOURCE_FIELD = "data_source"
 DEFAULT_DATA_SOURCE = "ubr"
 KYC_DETAILS_WORKFLOW_NAME = "Python KYC Details"
+KYC_PAYMENT_DETAILS_FIELDS = (
+    "account_number",
+    "account_name",
+    "bank",
+    "payment_provider_code",
+)
+SUPPORTED_KYC_PAYMENT_FIELDS = frozenset(KYC_PAYMENT_DETAILS_FIELDS)
+KYC_PAYMENT_RECONCILIATION_FIELDS = {
+    "gender": "Gender",
+    **{
+        field: field.replace("_", " ").title()
+        for field in KYC_PAYMENT_DETAILS_FIELDS
+        if field != "payment_provider_code"
+    },
+}
 DEFAULT_KYC_PAYMENT_DETAILS_CONFIG = {
     "payment_fields": ["account_number", "account_name", "bank"],
+    "optional_payment_fields": ["payment_provider_code"],
     "location_columns": ["district", "ta", "gvh", "village"],
     "context_columns": ["catchment", "gender", "phase_name"],
     "template_columns": [
@@ -25,6 +41,7 @@ DEFAULT_KYC_PAYMENT_DETAILS_CONFIG = {
         "account_number",
         "account_name",
         "bank",
+        "payment_provider_code",
     ],
     "header_aliases": {
         "district": "district",
@@ -51,6 +68,8 @@ DEFAULT_KYC_PAYMENT_DETAILS_CONFIG = {
         "account name": "account_name",
         "bank provider": "bank",
         "bank": "bank",
+        "payment provider code": "payment_provider_code",
+        "provider code": "payment_provider_code",
         "id": "ID",
     },
 }
@@ -70,6 +89,14 @@ def get_kyc_payment_details_config():
 
 def payment_details_fields():
     return set(get_kyc_payment_details_config()["payment_fields"])
+
+
+def optional_payment_details_fields():
+    return set(get_kyc_payment_details_config().get("optional_payment_fields", []))
+
+
+def all_payment_details_fields():
+    return payment_details_fields() | optional_payment_details_fields()
 
 
 def payment_details_location_columns():
@@ -99,15 +126,12 @@ def payment_details_text_fields():
     return {
         "form_number",
         "nid",
-        "account_number",
-        "account_name",
-        "bank",
-        *payment_details_fields(),
+        *all_payment_details_fields(),
     }
 
 
 def has_payment_details_columns(columns):
-    return bool(payment_details_fields().intersection(columns))
+    return bool(all_payment_details_fields().intersection(columns))
 
 
 def _normalized_header_aliases():
