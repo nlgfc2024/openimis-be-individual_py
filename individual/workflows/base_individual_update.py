@@ -229,10 +229,20 @@ BEGIN
                         'account_number', f."Json_ext"->>'account_number',
                         'account_name', f."Json_ext"->>'account_name',
                         'bank', f."Json_ext"->>'bank',
-                        'payment_provider_code', COALESCE(
-                            NULLIF(f."Json_ext"->>'payment_provider_code', ''),
-                            individual_individual."Json_ext"->>'payment_provider_code'
-                        )
+                        -- Provider codes identify the selected bank/provider. Retaining a
+                        -- previous code after the bank changes would make payroll resolve the
+                        -- payment against the wrong provider. An explicitly blank optional
+                        -- incoming code therefore clears the stored value when the bank changes.
+                        'payment_provider_code', CASE
+                            WHEN NULLIF(BTRIM(f."Json_ext"->>'bank'), '') IS NOT NULL
+                                AND NULLIF(BTRIM(f."Json_ext"->>'bank'), '') IS DISTINCT FROM
+                                    NULLIF(BTRIM(individual_individual."Json_ext"->>'bank'), '')
+                            THEN NULLIF(BTRIM(f."Json_ext"->>'payment_provider_code'), '')
+                            ELSE COALESCE(
+                                NULLIF(BTRIM(f."Json_ext"->>'payment_provider_code'), ''),
+                                individual_individual."Json_ext"->>'payment_provider_code'
+                            )
+                        END
                     )
                     ELSE COALESCE(f."Json_ext", '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object(
                         'account_number', COALESCE(
@@ -247,10 +257,16 @@ BEGIN
                             NULLIF(f."Json_ext"->>'bank', ''),
                             individual_individual."Json_ext"->>'bank'
                         ),
-                        'payment_provider_code', COALESCE(
-                            NULLIF(f."Json_ext"->>'payment_provider_code', ''),
-                            individual_individual."Json_ext"->>'payment_provider_code'
-                        )
+                        'payment_provider_code', CASE
+                            WHEN NULLIF(BTRIM(f."Json_ext"->>'bank'), '') IS NOT NULL
+                                AND NULLIF(BTRIM(f."Json_ext"->>'bank'), '') IS DISTINCT FROM
+                                    NULLIF(BTRIM(individual_individual."Json_ext"->>'bank'), '')
+                            THEN NULLIF(BTRIM(f."Json_ext"->>'payment_provider_code'), '')
+                            ELSE COALESCE(
+                                NULLIF(BTRIM(f."Json_ext"->>'payment_provider_code'), ''),
+                                individual_individual."Json_ext"->>'payment_provider_code'
+                            )
+                        END
                     ))
                 END
             FROM individual_individualdatasource f

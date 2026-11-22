@@ -142,8 +142,9 @@ The `paymentDetails` GraphQL field is permission-gated by
 `gql_kyc_payment_details_perms`. General `jsonExt` responses and generic
 exports omit payment details. Explicit account columns in a phase-scoped,
 primary-recipient group export also require this right. The migration grants
-right `159006` to the IMIS administrator role when that role exists; grant the
-right to any other roles that need to view payment details.
+right `159006` only to the IMIS administrator role when that role exists.
+Explicitly grant that right to every other role that needs to view payment
+details, including KYC review and approval roles.
 
 
 ## Additional Field Definition
