@@ -138,13 +138,13 @@ through `header_aliases`, mapping each heading to its corresponding stored key.
 Payment details can only be created or changed through the approved KYC
 workflow; generic Individual edits and imports cannot change them.
 
-The `paymentDetails` GraphQL field is permission-gated by
-`gql_kyc_payment_details_perms`. General `jsonExt` responses and generic
-exports omit payment details. Explicit account columns in a phase-scoped,
-primary-recipient group export also require this right. The migration grants
-right `159006` only to the IMIS administrator role when that role exists.
-Explicitly grant that right to every other role that needs to view payment
-details, including KYC review and approval roles.
+The `paymentDetails` GraphQL field, including KYC upload-task previews, is
+permission-gated by `gql_kyc_payment_details_perms`. General `jsonExt` responses
+and generic exports omit payment details. Explicit account columns in a
+phase-scoped, primary-recipient group export also require this right. The
+migration grants right `159006` only to the IMIS administrator role when that
+role exists. Explicitly grant the right to every other role that needs to view
+payment details, including KYC review and approval roles.
 
 
 ## Additional Field Definition
