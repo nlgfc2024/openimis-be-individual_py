@@ -46,6 +46,11 @@ class Individual(HistoryModel):
             user_districts_match_individual = LocationManager().build_user_location_filter_query(
                 user._u
             )
+            # An empty Q means location access is unrestricted. Combining it
+            # with the household fallback drops that unrestricted branch and
+            # incorrectly requires every person to have household membership.
+            if not user_districts_match_individual:
+                return queryset
             individual_has_group = models.Q(("groupindividuals__group__isnull", False))
             user_districts_match_individual_group = LocationManager().build_user_location_filter_query(
                 user._u,
