@@ -18,8 +18,9 @@ class IndividualQuerysetAccessTest(SimpleTestCase):
         self.assertFalse(user.is_imis_admin)
         self.assertTrue(user.is_superuser)
         # The real location manager returns an empty Q for technical users.
-        self.assertIs(Individual.get_queryset(queryset, user), queryset)
-        self.assertNotIn("individual_groupindividual", str(queryset.query))
+        result = Individual.get_queryset(queryset, user)
+        self.assertIs(result, queryset)
+        self.assertNotIn("individual_groupindividual", str(result.query))
 
     def test_unrestricted_location_policy_does_not_add_household_requirement(self):
         user = SimpleNamespace(is_anonymous=False, is_imis_admin=False, _u=object())
