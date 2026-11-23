@@ -95,10 +95,11 @@ class BaseGroupColumnAggregationClass(ItemsUploadTaskCompletionEvent):
                 if isinstance(self.upload_record.json_ext, dict)
                 else None,
         }
-        TaskService(self.user).create({
+        TaskService(self.user, trusted_internal=True).create({
             'source': 'import_group_valid_items',
             'entity': self.upload_record,
             'status': Task.Status.RECEIVED,
+            'benefit_plan_is_shared': True,
             'executor_action_event': TasksManagementConfig.default_executor_event,
             'business_event': IndividualConfig.validation_import_group_valid_items,
             'json_ext': json_ext

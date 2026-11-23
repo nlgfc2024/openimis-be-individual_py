@@ -1426,10 +1426,11 @@ class IndividualTaskCreatorService:
             json_ext["primary_recipient_changes"] = (
                 IndividualImportService._primary_recipient_changes_from_sources(validations)
             )
-        TaskService(self.user).create({
+        TaskService(self.user, trusted_internal=True).create({
             'source': 'import_valid_items',
             'entity': upload_record,
             'status': Task.Status.RECEIVED,
+            'benefit_plan_is_shared': True,
             'executor_action_event': TasksManagementConfig.default_executor_event,
             'business_event': business_event,
             'json_ext': json_ext

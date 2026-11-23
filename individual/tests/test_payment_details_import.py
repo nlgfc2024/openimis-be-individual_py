@@ -325,6 +325,26 @@ class PaymentDetailsImportTests(TestCase):
         self.assertEqual(sources[0].validations["validation_errors"], [])
         self.assertEqual(sources[0].validations["validation_warnings"][0]["field_name"], "first_name")
 
+    def test_registry_task_has_explicit_trusted_shared_ownership(self):
+        upload, _sources = self._create_upload([{}])
+        upload_record = IndividualDataUploadRecords(
+            data_upload=upload,
+            workflow="registry.workflow",
+            json_ext={},
+        )
+        upload_record.save(user=self.user)
+
+        with patch("tasks_management.services.TaskService") as task_service, patch.object(
+            IndividualTaskCreatorService,
+            "_IndividualTaskCreatorService__calculate_percentage_of_invalid_items",
+            return_value=0,
+        ):
+            IndividualTaskCreatorService(self.user)._create_task(upload.id, "test.event")
+
+        task_service.assert_called_once_with(self.user, trusted_internal=True)
+        payload = task_service.return_value.create.call_args.args[0]
+        self.assertTrue(payload["benefit_plan_is_shared"])
+
     def test_primary_recipient_change_is_explained_in_validation_summary(self):
         self.membership.json_ext = {"primary_worker": False}
         self.membership.save(user=self.user)

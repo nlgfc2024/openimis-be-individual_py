@@ -1,6 +1,6 @@
 import json
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from django.test import SimpleTestCase, TestCase
 
@@ -14,6 +14,28 @@ from individual.tests.test_helpers import create_group, create_individual
 
 
 class DataSourceHelpersTest(SimpleTestCase):
+    def test_group_registry_task_has_explicit_trusted_shared_ownership(self):
+        user = Mock()
+        data_upload = SimpleNamespace(id="upload-id", source_name="registry.csv")
+        data_upload.save = Mock()
+        upload_record = SimpleNamespace(
+            data_upload=data_upload,
+            workflow="registry.workflow",
+            json_ext={},
+        )
+        event = BaseGroupColumnAggregationClass(
+            "workflow.name", upload_record, data_upload.id, user
+        )
+
+        with patch(
+            "individual.signals.on_validation_import_valid_items.TaskService"
+        ) as task_service:
+            event._create_task()
+
+        task_service.assert_called_once_with(user, trusted_internal=True)
+        payload = task_service.return_value.create.call_args.args[0]
+        self.assertTrue(payload["benefit_plan_is_shared"])
+
     def test_plan_source_defaults_to_msr(self):
         self.assertEqual(benefit_plan_data_source(SimpleNamespace(json_ext={})), "ubr")
         self.assertEqual(benefit_plan_data_source(SimpleNamespace(json_ext=None)), "ubr")
