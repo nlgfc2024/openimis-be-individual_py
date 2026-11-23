@@ -77,7 +77,7 @@ def create_sp_role(created_by_user):
     }
     role = Role.objects.create(**sp_role_data)
 
-    for right_id in [159001, 159002, 159003, 159004, 159005, 180001, 180002, 180003, 180004]:
+    for right_id in [159001, 159002, 159003, 159004, 159005, 159006, 180001, 180002, 180003, 180004]:
         RoleRight.objects.create(
             **{
                 "role_id": role.id,

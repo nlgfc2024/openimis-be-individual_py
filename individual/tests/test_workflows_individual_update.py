@@ -7,7 +7,7 @@ from individual.models import (
     IndividualDataSourceUpload,
     IndividualDataUploadRecords,
 )
-from individual.workflows.base_individual_update import process_update_individuals_workflow
+from individual.workflows.base_individual_update import process_update_individuals_workflow, update_sql
 from individual.tests.test_helpers import create_test_village, create_individual
 from opensearch_reports.service import BaseSyncDocument
 from unittest.mock import patch
@@ -16,6 +16,15 @@ from unittest import skipIf
 
 
 class ProcessUpdateIndividualsWorkflowTest(TestCase):
+
+    def test_changed_bank_with_blank_provider_code_clears_stale_provider_code(self):
+        """A KYC bank replacement must not retain a code for the previous bank."""
+        expected_sql = """WHEN NULLIF(BTRIM(f.\"Json_ext\"->>'bank'), '') IS NOT NULL
+                                AND NULLIF(BTRIM(f.\"Json_ext\"->>'bank'), '') IS DISTINCT FROM
+                                    NULLIF(BTRIM(individual_individual.\"Json_ext\"->>'bank'), '')
+                            THEN NULLIF(BTRIM(f.\"Json_ext\"->>'payment_provider_code'), '')"""
+
+        self.assertEqual(update_sql.count(expected_sql), 2)
 
     @classmethod
     def setUpClass(cls):

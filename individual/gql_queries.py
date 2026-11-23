@@ -7,6 +7,7 @@ import graphene_django_optimizer as gql_optimizer
 from core import prefix_filterset, ExtendedConnection
 from core.gql_queries import UserGQLType
 from individual.apps import IndividualConfig
+from individual.data_source import SUPPORTED_KYC_PAYMENT_FIELDS
 from individual.models import Individual, IndividualDataSource, Group, GroupIndividual, \
     IndividualDataSourceUpload, IndividualDataUploadRecords, GroupDataSource
 from individual.primary_recipients import authoritative_primary_worker_memberships
@@ -84,15 +85,53 @@ def _have_permissions(user, permission):
     return user.has_perms(permission)
 
 
+def has_kyc_payment_details_access(user):
+    return _have_permissions(user, IndividualConfig.gql_kyc_payment_details_perms)
+
+
+def _json_ext_without_payment_details(json_ext):
+    if not isinstance(json_ext, dict):
+        return json_ext
+    return {
+        key: value
+        for key, value in json_ext.items()
+        if key not in SUPPORTED_KYC_PAYMENT_FIELDS
+    }
+
+
+def _payment_details_for_user(json_ext, user):
+    if not has_kyc_payment_details_access(user) or not isinstance(json_ext, dict):
+        return None
+    return {
+        field: json_ext[field]
+        for field in SUPPORTED_KYC_PAYMENT_FIELDS
+        if field in json_ext
+    }
+
+
 class JsonExtMixin:
     def resolve_json_ext(self, info):
         if _have_permissions(info.context.user, IndividualConfig.gql_individual_search_perms):
-            return self.json_ext
+            return _json_ext_without_payment_details(self.json_ext)
         return None
+
+
+class KycPaymentDetailsGQLType(graphene.ObjectType):
+    account_number = graphene.String()
+    account_name = graphene.String()
+    bank = graphene.String()
+    payment_provider_code = graphene.String()
 
 
 class IndividualGQLType(DjangoObjectType):
     uuid = graphene.String(source='uuid')
+    payment_details = graphene.Field(KycPaymentDetailsGQLType)
+
+    def resolve_json_ext(self, info):
+        return _json_ext_without_payment_details(self.json_ext)
+
+    def resolve_payment_details(self, info):
+        return _payment_details_for_user(self.json_ext, info.context.user)
 
     class Meta:
         model = Individual
@@ -118,6 +157,9 @@ class IndividualGQLType(DjangoObjectType):
 class IndividualHistoryGQLType(DjangoObjectType):
     uuid = graphene.String(source='uuid')
     user_updated = graphene.Field(UserGQLType)
+
+    def resolve_json_ext(self, info):
+        return _json_ext_without_payment_details(self.json_ext)
 
     def resolve_user_updated(self, info):
         return self.user_updated
@@ -169,7 +211,7 @@ class IndividualDataSourceUploadGQLType(DjangoObjectType):
         return _filter_by_accessible_uploads(queryset, info, "id")
 
 
-class IndividualDataSourceGQLType(DjangoObjectType):
+class IndividualDataSourceGQLType(DjangoObjectType, JsonExtMixin):
     uuid = graphene.String(source='uuid')
 
     class Meta:
@@ -207,6 +249,24 @@ class GroupGQLType(DjangoObjectType):
     primary_recipient_account_number = graphene.String()
     primary_recipient_account_name = graphene.String()
     primary_recipient_bank = graphene.String()
+
+    def resolve_json_ext(self, info):
+        return _json_ext_without_payment_details(self.json_ext)
+
+    def resolve_primary_recipient_account_number(self, info):
+        if not has_kyc_payment_details_access(info.context.user):
+            return None
+        return getattr(self, "primary_recipient_account_number", None)
+
+    def resolve_primary_recipient_account_name(self, info):
+        if not has_kyc_payment_details_access(info.context.user):
+            return None
+        return getattr(self, "primary_recipient_account_name", None)
+
+    def resolve_primary_recipient_bank(self, info):
+        if not has_kyc_payment_details_access(info.context.user):
+            return None
+        return getattr(self, "primary_recipient_bank", None)
 
     def resolve_head(self, info):
         return Individual.objects.filter(
@@ -254,6 +314,9 @@ class GroupHistoryGQLType(DjangoObjectType):
     uuid = graphene.String(source='uuid')
     user_updated = graphene.Field(UserGQLType)
     head = graphene.Field(IndividualGQLType)
+
+    def resolve_json_ext(self, info):
+        return _json_ext_without_payment_details(self.json_ext)
 
     def resolve_head(self, info):
         return Individual.objects.filter(
@@ -365,7 +428,7 @@ class IndividualDataUploadQGLType(DjangoObjectType, JsonExtMixin):
         )
 
 
-class GroupDataSourceGQLType(DjangoObjectType):
+class GroupDataSourceGQLType(DjangoObjectType, JsonExtMixin):
     uuid = graphene.String(source='uuid')
 
     class Meta:
