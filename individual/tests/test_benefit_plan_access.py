@@ -7,7 +7,12 @@ from django.core.exceptions import PermissionDenied
 from django.test import SimpleTestCase, TestCase, override_settings
 
 from core.models import User
-from core.test_helpers import create_test_technical_user
+from core.test_helpers import (
+    create_test_interactive_user,
+    create_test_language,
+    create_test_role,
+    create_test_technical_user,
+)
 from individual.custom_filters import IndividualCustomFilterWizard
 from individual.gql_queries import _filter_by_accessible_uploads
 from individual.models import (
@@ -18,6 +23,13 @@ from individual.models import (
     IndividualDataUploadRecords,
 )
 from individual.schema import Query
+from individual.services import (
+    CreateGroupAndMoveIndividualService,
+    GroupIndividualService,
+    GroupService,
+    IndividualService,
+)
+from individual.tests.test_helpers import create_group_with_individual
 from social_protection.apps import SocialProtectionConfig
 from social_protection.models import (
     BenefitPlan,
@@ -25,6 +37,15 @@ from social_protection.models import (
     GroupBeneficiary,
     UserBenefitPlanAccess,
 )
+from tasks_management.gql_queries import TaskGQLType
+from tasks_management.models import Task, TaskExecutor, TaskGroup
+from tasks_management.services import TaskService
+
+
+class _CheckerValidation:
+    validate_create = staticmethod(lambda user, **data: None)
+    validate_update = staticmethod(lambda user, **data: None)
+    validate_delete = staticmethod(lambda user, **data: None)
 
 
 class IndividualBenefitPlanQueryAccessTest(SimpleTestCase):
@@ -237,6 +258,173 @@ class IndividualCustomFilterBenefitPlanAccessTest(SimpleTestCase):
             ),
             [],
         )
+
+
+@override_settings(ROW_SECURITY=False)
+class IndividualMakerCheckerTaskOwnershipTest(TestCase):
+    task_sources = (
+        "IndividualService",
+        "GroupService",
+        "GroupIndividualService",
+        "CreateGroupAndMoveIndividualService",
+    )
+
+    @classmethod
+    def setUpTestData(cls):
+        create_test_language()
+        role = create_test_role(
+            perm_names=[
+                "gql_individual_update_perms",
+                "gql_group_create_perms",
+                "gql_group_update_perms",
+                "gql_group_delete_perms",
+                "gql_task_search_perms",
+                "gql_task_update_perms",
+            ],
+            name="Track 04 shared registry maker-checker",
+        )
+        cls.audit_user = create_test_interactive_user(
+            username="track04-checker-audit",
+        )
+        cls.maker = create_test_interactive_user(
+            username="track04-registry-maker",
+            roles=[role.id],
+        )
+        cls.checker = create_test_interactive_user(
+            username="track04-registry-checker",
+            roles=[role.id],
+        )
+        cls.unassigned_checker = create_test_interactive_user(
+            username="track04-no-group",
+            roles=[role.id],
+        )
+        cls.plan = BenefitPlan(code="T04-MC", name="Track 04 maker-checker")
+        cls.plan.save(user=cls.audit_user)
+        cls.other_plan = BenefitPlan(
+            code="T04MCOTH",
+            name="Track 04 other programme",
+        )
+        cls.other_plan.save(user=cls.audit_user)
+        for user in (cls.maker, cls.checker, cls.unassigned_checker):
+            UserBenefitPlanAccess(user=user, benefit_plan=cls.plan).save(
+                user=cls.audit_user,
+            )
+
+        cls.individual, cls.group, cls.group_individual = (
+            create_group_with_individual(cls.audit_user.username)
+        )
+        cls.task_group = TaskGroup(
+            code="T04-MC",
+            completion_policy=TaskGroup.TaskGroupCompletionPolicy.ALL,
+            json_ext={"task_sources": list(cls.task_sources)},
+        )
+        cls.task_group.save(user=cls.audit_user)
+        TaskExecutor(user=cls.checker, task_group=cls.task_group).save(
+            user=cls.audit_user,
+        )
+
+    def setUp(self):
+        self.original_enabled = (
+            SocialProtectionConfig.enable_benefit_plan_access_control
+        )
+        SocialProtectionConfig.enable_benefit_plan_access_control = True
+
+    def tearDown(self):
+        SocialProtectionConfig.enable_benefit_plan_access_control = (
+            self.original_enabled
+        )
+
+    def _create_checker_tasks(self):
+        operations = (
+            IndividualService(
+                self.maker,
+                validation_class=_CheckerValidation,
+            ).create_update_task({"id": self.individual.id}),
+            GroupService(
+                self.maker,
+                validation_class=_CheckerValidation,
+            ).create_delete_task({"id": self.group.id}),
+            GroupIndividualService(
+                self.maker,
+                validation_class=_CheckerValidation,
+            ).create_update_task({
+                "id": self.group_individual.id,
+                "group_id": self.group.id,
+            }),
+            CreateGroupAndMoveIndividualService(
+                self.maker,
+                validation_class=_CheckerValidation,
+            ).create_create_task({
+                "group_individual_id": self.group_individual.id,
+                "code": "T04-MOVED-GROUP",
+            }),
+        )
+        for result in operations:
+            self.assertTrue(result["success"], result)
+        return [Task.objects.get(id=result["data"]["id"]) for result in operations]
+
+    def _visible_tasks(self, user):
+        info = SimpleNamespace(context=SimpleNamespace(user=user))
+        return TaskGQLType.get_queryset(Task.objects.all(), info)
+
+    def test_all_registry_services_create_explicit_shared_tasks(self):
+        tasks = self._create_checker_tasks()
+
+        self.assertEqual({task.source for task in tasks}, set(self.task_sources))
+        for task in tasks:
+            self.assertTrue(task.benefit_plan_is_shared)
+            self.assertIsNone(task.benefit_plan_id)
+            self.assertEqual(task.task_group_id, self.task_group.id)
+            self.assertEqual(task.status, Task.Status.ACCEPTED)
+
+    def test_authorized_checker_can_access_and_complete_shared_tasks(self):
+        tasks = self._create_checker_tasks()
+
+        self.assertEqual(
+            set(self._visible_tasks(self.checker).values_list("id", flat=True)),
+            {task.id for task in tasks},
+        )
+        result = TaskService(self.checker).complete_task({"id": tasks[0].id})
+        self.assertTrue(result["success"], result)
+
+    def test_task_group_scope_and_unresolved_ownership_remain_restricted(self):
+        shared_task = self._create_checker_tasks()[0]
+        unresolved = Task(
+            source="unresolved-registry-task",
+            status=Task.Status.ACCEPTED,
+            task_group=self.task_group,
+            data={},
+        )
+        unresolved.save(user=self.audit_user)
+        other_programme = Task(
+            source="other-programme-task",
+            status=Task.Status.ACCEPTED,
+            task_group=self.task_group,
+            benefit_plan_id=str(self.other_plan.id),
+            data={},
+        )
+        other_programme.save(user=self.audit_user)
+
+        self.assertIn(shared_task, self._visible_tasks(self.checker))
+        self.assertNotIn(unresolved, self._visible_tasks(self.checker))
+        self.assertNotIn(other_programme, self._visible_tasks(self.checker))
+        self.assertFalse(self._visible_tasks(self.unassigned_checker).exists())
+        denied = TaskService(self.unassigned_checker).complete_task({
+            "id": shared_task.id,
+        })
+        self.assertFalse(denied["success"])
+
+    def test_feature_off_preserves_legacy_checker_workflow(self):
+        SocialProtectionConfig.enable_benefit_plan_access_control = False
+
+        tasks = self._create_checker_tasks()
+
+        self.assertEqual(
+            set(self._visible_tasks(self.checker).values_list("id", flat=True)),
+            {task.id for task in tasks},
+        )
+        result = TaskService(self.checker).complete_task({"id": tasks[0].id})
+        self.assertTrue(result["success"], result)
 
 
 @override_settings(ROW_SECURITY=False)
