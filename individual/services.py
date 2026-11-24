@@ -238,6 +238,8 @@ def _load_ods_with_text_columns(import_file):
 
 
 class IndividualService(BaseService, UpdateCheckerLogicServiceMixin, DeleteCheckerLogicServiceMixin):
+    _task_is_shared = True
+
     @register_service_signal('individual_service.create')
     def create(self, obj_data):
         return super().create(obj_data)
@@ -321,6 +323,7 @@ class GroupService(
     DeleteCheckerLogicServiceMixin
 ):
     OBJECT_TYPE = Group
+    _task_is_shared = True
 
     def __init__(self, user, validation_class=GroupValidation):
         super().__init__(user, validation_class)
@@ -421,6 +424,7 @@ class GroupService(
 
 class CreateGroupAndMoveIndividualService(CreateCheckerLogicServiceMixin):
     OBJECT_TYPE = Group
+    _task_is_shared = True
 
     def __init__(self, user, validation_class=CrateGroupAndMoveIndividualValidation):
         self.user = user
@@ -463,6 +467,7 @@ class CreateGroupAndMoveIndividualService(CreateCheckerLogicServiceMixin):
 
 class GroupIndividualService(BaseService, UpdateCheckerLogicServiceMixin):
     OBJECT_TYPE = GroupIndividual
+    _task_is_shared = True
 
     def __init__(self, user, validation_class=GroupIndividualValidation):
         super().__init__(user, validation_class)
