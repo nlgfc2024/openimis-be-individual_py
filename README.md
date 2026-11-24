@@ -90,6 +90,15 @@ Benefit Plan.
 ## openIMIS Modules Dependencies
 - core
 
+### Benefit Plan access-control merge dependency
+
+The Benefit Plan access-control changes in Individual PR #33 must be merged
+only after Tasks Management PR #7 and its coordinated merge with Social
+Protection PR #27. Tasks Management PR #7 provides the trusted internal Task
+creation API and explicit shared-ownership fields used by registry imports and
+maker-checker Tasks. Older Tasks Management versions are not compatible; no
+fallback to unresolved Task ownership is supported.
+
 
 ## Enabling Python Workflows
 Module comes with simple workflows for individual data upload. 

@@ -248,6 +248,8 @@ def _load_ods_with_text_columns(import_file):
 
 
 class IndividualService(BaseService, UpdateCheckerLogicServiceMixin, DeleteCheckerLogicServiceMixin):
+    _task_is_shared = True
+
     @register_service_signal('individual_service.create')
     def create(self, obj_data):
         try:
@@ -434,6 +436,7 @@ class GroupService(
     DeleteCheckerLogicServiceMixin
 ):
     OBJECT_TYPE = Group
+    _task_is_shared = True
 
     def __init__(self, user, validation_class=GroupValidation):
         super().__init__(user, validation_class)
@@ -534,6 +537,7 @@ class GroupService(
 
 class CreateGroupAndMoveIndividualService(CreateCheckerLogicServiceMixin):
     OBJECT_TYPE = Group
+    _task_is_shared = True
 
     def __init__(self, user, validation_class=CrateGroupAndMoveIndividualValidation):
         self.user = user
@@ -576,6 +580,7 @@ class CreateGroupAndMoveIndividualService(CreateCheckerLogicServiceMixin):
 
 class GroupIndividualService(BaseService, UpdateCheckerLogicServiceMixin):
     OBJECT_TYPE = GroupIndividual
+    _task_is_shared = True
 
     def __init__(self, user, validation_class=GroupIndividualValidation):
         super().__init__(user, validation_class)
@@ -1543,10 +1548,11 @@ class IndividualTaskCreatorService:
             json_ext["primary_recipient_changes"] = (
                 IndividualImportService._primary_recipient_changes_from_sources(validations)
             )
-        TaskService(self.user).create({
+        TaskService(self.user, trusted_internal=True).create({
             'source': 'import_valid_items',
             'entity': upload_record,
             'status': Task.Status.RECEIVED,
+            'benefit_plan_is_shared': True,
             'executor_action_event': TasksManagementConfig.default_executor_event,
             'business_event': business_event,
             'json_ext': json_ext
